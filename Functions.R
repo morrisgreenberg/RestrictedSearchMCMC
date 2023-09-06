@@ -454,7 +454,6 @@ score_full_space_order <- function(order_H, map_pars, param, prec,
         }
         if(!pass_over){
           score_matr[iter, 1] <- bge_score_node(i, parent_group, N, param)
-          names(score_matr)[iter] <- stri_c(as.character(parent_group), collapse=",")
           iter <- iter+1
         }
         
@@ -525,7 +524,6 @@ score_full_space_plus_order <- function(order_H, map_pars, param, prec,
             }
             if(!pass_over){
               score_matr[iter,1] <- bge_score_node(i, parent_group, N, param)
-              names(score_matr)[iter] <- stri_c(as.character(parent_group), collapse=",")
               iter <- iter+1
             }
             
@@ -546,9 +544,7 @@ score_full_space_plus_order <- function(order_H, map_pars, param, prec,
         if(has_scores_orig){
           score_matr[, 1] <- H_scores[[i]][, 1]
           n_H_parset <- nrow(H_scores[[i]])
-          names(score_matr)[1:n_H_parset]<-names(H_scores[[i]])
           score_matr_v2[, 1] <- score_matr[, 1]
-          names(score_matr_v2)[1:n_H_parset]<-names(H_scores[[i]])
           score_sums[1] <- logSumExp(score_matr[,1])
         }
         iter <- 1
@@ -566,11 +562,7 @@ score_full_space_plus_order <- function(order_H, map_pars, param, prec,
           if(!pass_over){
             if(!has_scores_orig){
               score_matr[iter, 1] <- bge_score_node(i, parent_group, N, param)
-              names(score_matr)[iter] <- stri_c(as.character(parent_group), 
-                                                collapse=",")
               score_matr_v2[iter, 1] <- score_matr[iter, 1]
-              names(score_matr_v2)[iter] <- stri_c(as.character(parent_group), 
-                                                   collapse=",")
               score_sums[1] <- logSumExp(score_matr[,1])
             }
             for(k in 1:n_plus_sets){
@@ -578,12 +570,8 @@ score_full_space_plus_order <- function(order_H, map_pars, param, prec,
               parent_plus_group <- sort(c(parent_group, plus_group))
               score_matr[iter, k+1] <- 
                 bge_score_node(i, c(parent_plus_group), N, param)
-              names(score_matr)[(n_obs_parent_sets)*k+iter] <- stri_c(as.character(parent_plus_group), 
-                                                                      collapse=",")
             }
             score_matr_v2[iter, 1] <- logSumExp(score_matr[iter,])
-            names(score_matr_v2)[iter] <- stri_c(as.character(parent_group), 
-                                                 collapse=",")
             iter <- iter+1
           }
           
@@ -629,7 +617,6 @@ score_full_space <- function(H, map_pars, param,
           parent_group <- combos[j, 1:c(par_vec[j])] 
         }
         score_matr[j, 1] <- bge_score_node(i, parent_group, N, param)
-        names(score_matr)[j] <- stri_c(as.character(parent_group), collapse=",")
       }
       score_list[[i]] <- score_matr
     }
