@@ -407,7 +407,6 @@ generate_order_plus_table <- function(prec, H, plus_amt, param,
         return(map_pars$maps[[i]]$backwards[par_index])})
       score_matr <- matrix(0, nrow=length(index_keep), ncol=1)
       score_matr[1:length(index_keep), 1] <- lookup_table[index_keep,]
-      names(score_matr) <- names(lookup_table)[index_keep]
       order_scores[[i]] <- score_matr
     }
     return(score_full_space_plus_order(order_H, map_pars, param, prec, 
