@@ -8,4 +8,5 @@ Implementation of our Restricted Search MCMC methods for graph inference.
 3. Consider sparsity updating
 
 ## Completed Tasks:
-1. 2023-09-06: Updated `generate_order_table` to be as/more efficient than equivalent BiDAG implementation
+
+- 2023-09-06: Updated `generate_order_table` to be as/more efficient than equivalent BiDAG implementation
