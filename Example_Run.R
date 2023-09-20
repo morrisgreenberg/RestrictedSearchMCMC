@@ -62,4 +62,4 @@ probDAGs <- iterativeMCMC(score_par_test, scoreout = TRUE,
                           hardlimit = 16, softlimit = 10,
                           MAP = FALSE, posterior=0.2, alpha=0.4)
 
-mcmc_run <- graph_mcmc(probDAGs$startspace, score_par_test, B=2000)
+mcmc_run <- graph_mcmc(probDAGs$startspace, score_par_test, B=100)

@@ -317,8 +317,8 @@ create_banned_parent_table <- function(H, map_pars, score_list,
           for(j in (N_psets-1):min(cutoff, N_psets-1)){
             poset_pnodes <- poset_pt[[i]][j, c(1:revnumpar_vec[[i]][j])]
             p_total <- logSumExp(P_local[poset_pnodes])-log(N_ps-revnumpar_vec[[i]][j]-l+1)
-            max_par <- max(P_local[poset_pnodes])
-            p_total_v2 <- log(sum(exp(P_local[poset_pnodes]-max_par)))+max_par-log(N_ps-revnumpar_vec[[i]][j]-l+1)
+            # max_par <- max(P_local[poset_pnodes])
+            # p_total_v2 <- log(sum(exp(P_local[poset_pnodes]-max_par)))+max_par-log(N_ps-revnumpar_vec[[i]][j]-l+1)
             conj_score <- score_list[[i]][map_pars$maps[[i]]$backwards[N_psets-map_pars$maps[[i]]$forward[j]+1],1]
             max_amt <- max(conj_score, p_total)
             P_local[j] <- log(exp(conj_score-max_amt)+exp(p_total-max_amt))+max_amt
@@ -364,16 +364,15 @@ generate_order_table <- function(prec, H, param, map_pars,
         return(map_pars$maps[[i]]$backwards[par_index])})
       score_matr <- matrix(0, nrow=length(index_keep), ncol=1)
       score_matr[1:length(index_keep), 1] <- lookup_table[index_keep,]
-      names(score_matr) <- names(lookup_table)[index_keep]
       order_scores[[i]] <- score_matr
     }
     return(order_scores)
   }
-  return(score_full_space_order(order_H, map_pars, param, prec))
+  order_scores <- score_full_space_order(order_H, map_pars, param, prec)
+  
 }
 
-#description: generates a table of the valid plus parent sets compatible
-#             with the current order. 
+#description: scoring the plus space conditional on the current order
 #parameters:  prec - order
 #             H - search space
 #             plus_amt - amount of additional parents to allow beyond sets
@@ -621,6 +620,151 @@ score_full_space <- function(H, map_pars, param,
     }
   }
   return(score_list)
+}
+score_plus_space <- function(H, map_pars, plus_pars, param,
+                             N=ncol(H), updatenodes=1:N,
+                             has_scores_orig=FALSE, H_scores=NULL){
+  tot_scores <- vector(mode="list", length=N)
+  score_list <- vector(mode="list", length=N)
+  for(i in 1:N){
+    if(!(i %in% updatenodes) & has_scores_orig){
+      score_list[[i]] <- H_scores[[i]]
+      tot_scores[[i]] <- logSumExp(H_scores[[i]])
+    }
+    else{
+      combos <- map_pars$par_pset[[i]]
+      par_vec <- map_pars$numpars_vec[[i]]
+      plus_combos <- plus_pars$par_pset[[i]]
+      nonpar_vec <- plus_pars$numpars_vec[[i]]
+      n_parent_sets <- nrow(combos)
+      n_nonparent_sets <- nrow(plus_combos)
+      if(n_nonparent_sets==1){
+        if(has_scores_orig){
+          score_matr <- H_scores[[i]]
+          score_sums <- logSumExp(score_matr)
+        }
+        else{
+          score_matr <- matrix(0, nrow=n_parent_sets, ncol=1)
+          for(j in 1:n_parent_sets){
+            if(j==1){
+              parent_group <- integer(0)
+            }
+            else{
+              parent_group <- combos[j, 1:c(par_vec[j])]
+            }
+            score_matr[j,1] <- bge_score_node(i, parent_group, N, param)
+            
+          }
+          score_sums <- logSumExp(score_matr)
+        }
+        tot_scores[[i]] <- score_sums
+        score_list[[i]] <- score_matr
+      }
+      else{
+        score_lists <- vector(mode="list", length=n_nonparent_sets)
+        score_sums <- vector(mode="numeric", length=n_nonparent_sets)
+        for(k in 1:n_nonparent_sets){
+          if(k == 1 & has_scores_orig){
+            score_matr <- matrix(0, nrow=n_parent_sets, ncol=1)
+            score_matr[, 1] <- H_scores[[i]][, 1]
+            score_sums[1] <- logSumExp(score_matr[,1])
+            score_lists[[1]] <- score_matr
+          }
+          else{
+            n_nonpar <- nonpar_vec[k]
+            nonparent_group <- plus_combos[k, 1:n_nonpar]
+            score_matr <- matrix(0, nrow=n_parent_sets, ncol=1)
+            for(j in 1:n_parent_sets){
+              if(j==1){
+                if(k==1){
+                  full_set <- integer(0)
+                }
+                else{
+                  full_set <- nonparent_group
+                }
+              }
+              else{
+                if(k==1){
+                  full_set <- combos[j, 1:c(par_vec[j])] 
+                }
+                else{
+                  parent_group <- combos[j, 1:c(par_vec[j])] 
+                  full_set <- c(parent_group, nonparent_group)
+                }
+              }
+              score_matr[j, 1] <- bge_score_node(i, full_set, N, param)
+            }
+            score_lists[[k]] <- score_matr 
+            score_sums[k] <- logSumExp(score_matr[,1])
+          }
+        }
+        score_list[[i]] <- score_lists
+        tot_scores[[i]] <- score_sums
+      }
+    }
+  }
+  return(list("full_list"=score_list, "tot_scores_add"=tot_scores))
+}
+
+
+create_banned_plus_parent_table <- function(H, map_pars, plus_pars, 
+                                            score_plus_list, 
+                                            N=ncol(H), updatenodes=1:N,
+                                            has_scores_orig=FALSE, 
+                                            old_scores=NULL){
+  poset_pt<-list(length=N)
+  for(i in updatenodes){
+    Ni_rows <- nrow(map_pars$idx_pset[[i]])
+    Ni_cols <- ncol(map_pars$idx_pset[[i]])
+    poset_pt[[i]]<-matrix(NA,nrow=Ni_rows,ncol=Ni_cols)
+    offsets<-rep(1,Ni_rows)
+    
+    if(Ni_rows>1){
+      for(j in Ni_rows:2){
+        col_sel <- c(1:map_pars$numpars_vec[[i]][j])
+        p_nodes <- map_pars$idx_pset[[i]][j, col_sel]
+        children <-map_pars$maps[[i]]$backwards[map_pars$maps[[i]]$forward[j]-2^(p_nodes)/2]
+        poset_pt[[i]][cbind(children, offsets[children])]<-j
+        offsets[children]<-offsets[children]+1
+      }
+    }
+  }
+  orderscore<-vector(mode="list", length=N)
+  revnumpar_vec<-lapply(map_pars$numpars_vec,rev)
+  num_pars <- rowSums(H)
+  for(i in 1:N){
+    if(!(i %in% updatenodes) & has_scores_orig){
+      orderscore[[i]] <- old_scores[[i]]
+    }
+    else{
+      N_psets <- nrow(poset_pt[[i]])
+      N_ps <- num_pars[i]
+      binom_coef <- choose(N_ps, c(0:N_ps))
+      N_outside <- length(plus_pars$par_pset[[i]][,1])
+      P_local<-matrix(nrow=N_psets, ncol=N_outside)
+      
+      for(j in 1:N_outside){
+        P_local[N_psets, j] <- score_plus_list[[i]][[j]][1,1]
+        P_local[1, j] <- logSumExp(score_plus_list[[i]][[j]][,1])
+        cutoff <- 1
+        if(N_psets > 2){
+          for(l in 1:(N_ps-1)){
+            cutoff <- cutoff + binom_coef[l]
+            for(k in (N_psets-1):min(cutoff, N_psets-1)){
+              poset_pnodes <- poset_pt[[i]][k, c(1:revnumpar_vec[[i]][k])]
+              p_total <- logSumExp(P_local[poset_pnodes, j])-log(N_ps-revnumpar_vec[[i]][k]-l+1)
+              conj_score <- score_plus_list[[i]][[j]][map_pars$maps[[i]]$backwards[N_psets-map_pars$maps[[i]]$forward[k]+1],1]
+              max_amt <- max(conj_score, p_total)
+              P_local[k, j] <- log(exp(conj_score-max_amt)+exp(p_total-max_amt))+max_amt
+            }
+          }
+        }
+      }
+      orderscore[[i]] <- P_local
+    }
+    
+  }
+  return(orderscore)
 }
 #description: wrapper function for hash tables 
 #             H - current space
@@ -934,31 +1078,15 @@ sample_from_2_orders <- function(prec_t, prec_prime,
   N <- length(space_banned_score_list)
   score_t <- 0
   score_prime <- 0
+  banned_pars_t <- banned_parents_mapping(map_pars, prec_t)
+  index_banned_t <- banned_pars_t$banned_row
+  banned_pars_prime <- banned_parents_mapping(map_pars, prec_prime)
+  index_banned_prime <- banned_pars_prime$banned_row
   for(i in 1:N){
     # access lookup table for current node
     lookup_table <- space_banned_score_list[[i]]
-    # find where the current node is in each order
-    index_i_t <- which(prec_t==i)
-    index_i_prime <- which(prec_prime==i)
-    # find the banned parent sets 
-    # (a.k.a, nodes listed after the current node for each order)
-    all_parents <- map_pars$par_names[[i]]
-    banned_pars_t <- ifelse(index_i_t != 1,
-                            which(all_parents %in% prec_t[1:(index_i_t-1)]),
-                            integer(0))
-    banned_pars_prime <- ifelse(index_i_prime != 1,
-                                which(all_parents %in% 
-                                        prec_prime[1:(index_i_prime-1)]), 
-                                integer(0))
-    # access the relevant row from the banned parent table, and update 
-    # score since we are on the log-scale, we add each node's relevant 
-    # score to the full order score
-    index_banned_t <- ifelse(is.na(banned_pars_t),1,
-                             map_pars$maps[[i]]$backwards[sum(2^banned_pars_t)/2+1])
-    index_banned_prime <- ifelse(is.na(banned_pars_prime), 1,
-                                 map_pars$maps[[i]]$backwards[sum(2^banned_pars_prime)/2+1])
-    score_t <- score_t + lookup_table[index_banned_t]
-    score_prime <- score_prime + lookup_table[index_banned_prime]
+    score_t <- score_t + lookup_table[index_banned_t[i]]
+    score_prime <- score_prime + lookup_table[index_banned_prime[i]]
   }
   r <- min(exp(score_prime-score_t), 1)
   prec_t1 <- sample(c("prime", "t"), size=1, prob=c(r, 1-r))
@@ -979,19 +1107,13 @@ sample_from_multiple_orders <- function(prec_list, space_banned_score_list,
   banned_pars <- vector(mode="list", length=num_orders)
   index_banned <- vector(mode="list", length=num_orders)
   score_vec <- rep(0, num_orders)
-  for(i in 1:N){
-    lookup_table <- space_banned_score_list[[i]]
-    all_parents <- map_pars$par_names[[i]]
-    for(j in 1:num_orders){
-      prec_curr <- prec_list[[j]]
-      index_i_j <-  which(prec_curr==i)
-      index_i_list[[j]] <- index_i_j
-      banned_pars[[j]] <- ifelse(index_i_j != 1,
-                                 which(all_parents %in% prec_curr[1:(index_i_j-1)]),
-                                 integer(0))
-      index_banned[[j]] <- ifelse(is.na(banned_pars[[j]]), 1,
-                                  map_pars$maps[[i]]$backwards[sum(2^banned_pars[[j]])/2+1])
-      score_vec[j] <- score_vec[j] + lookup_table[index_banned[[j]]]
+  for(j in 1:num_orders){
+    prec_curr <- prec_list[[j]]
+    banned_pars_j <- banned_parents_mapping(map_pars, prec_curr)
+    index_banned[[j]] <- banned_pars_j$banned_row
+    for(i in 1:N){
+      lookup_table <- space_banned_score_list[[i]]
+      score_vec[j] <- score_vec[j] + lookup_table[index_banned[[j]][i]]
     }
   }
   # because we operate on the log scale, we use a log-sum function from 
@@ -1001,20 +1123,139 @@ sample_from_multiple_orders <- function(prec_list, space_banned_score_list,
   prec_drawn <- sample(1:num_orders, size=1, prob=score_vec)
   return(prec_list[[prec_drawn]])
 }
+#description: keeps track of the row compatible with the current order 
+#             for each node's banned parent table (and score table)
+#parameters:  map_pars - hash table for quick scoring
+#             prec - current_order
+#             create_plus_sets - indicator for whether to return all valid rows
+#                                in the score table
+banned_parents_mapping <- function(map_pars, prec, create_plus_sets=FALSE){
+  N <- length(map_pars$par_names)
+  if(create_plus_sets){valid_parset_maps <- vector(mode="list", length=N)}
+  
+  banned_lookup_row <- vector(length=N)
+  
+  for(i in 1:N){
+    # find where the current node is in the order
+    index_i <- which(prec==i)
+    # find the banned parent sets 
+    # (a.k.a, nodes listed after the current node for each order)
+    all_parents <- map_pars$par_names[[i]]
+    banned_par_idx <- integer(0)
+    if(index_i != 1){banned_par_idx <- which(all_parents %in% prec[1:(index_i-1)])}
+    
+    # access the relevant row from the banned parent table
+    index_banned <- ifelse(length(banned_par_idx)==0 | is.na(banned_par_idx[1]),1,
+                           map_pars$maps[[i]]$backwards[sum(2^banned_par_idx)/2+1])
+    banned_lookup_row[i] <- index_banned
+    if(create_plus_sets){
+      #finding which indices in the score table are valid per the order
+      if(index_banned==1){
+        allowed_rows<-c(1:nrow(map_pars$par_pset[[i]]))
+      }
+      else{
+        tablesize <- dim(map_pars$par_pset[[i]])
+        if(tablesize[1]==1 || length(banned_par_idx)==tablesize[2]){
+          allowed_rows <- c(1)
+        }
+        else{
+          allowed_rows <- c(2:tablesize[1])
+          banned_pars <- map_pars$par_names[[i]][banned_par_idx]
+          #column-wise search for banned parents to eliminate rows
+          for(j in 1:tablesize[2]){
+            banned_rows <- which(map_pars$par_pset[[i]][allowed_rows, j] %in% banned_pars)
+            if(length(banned_rows)>0){allowed_rows <- allowed_rows[-banned_rows]}
+          }
+          allowed_rows<-c(1,allowed_rows)
+        }
+      }
+      
+      valid_parset_maps[[i]] <- allowed_rows
+    }
+    
+  }
+  if(create_plus_sets){
+    return(list("banned_row"=banned_lookup_row, "valid_pset_rows"=valid_parset_maps))
+  }
+  return(list("banned_row"=banned_lookup_row))
+}
+
 #description: samples a graph from an order score list
 #parameters:  order_score_list - list of parent scores compatible with order
-sample_graph <- function(order_score_list){
-  N <- length(order_score_list)
+sample_graph <- function(score_list, prec, map_pars, banned_map_pars){
+  N <- length(score_list)
   G <- matrix(0, ncol=N, nrow=N)
   for(i in 1:N){
-    lookup_table <- order_score_list[[i]]
+    valid_rows <- banned_map_pars$valid_pset_rows[[i]]
+    lookup_table <- score_list[[i]][valid_rows,]
+    par_sets <- map_pars$par_pset[[i]][valid_rows,]
+    numpars_vec <- map_pars$numpars_vec[[i]][valid_rows]
     prob_vec <- as.numeric(exp(lookup_table-logSumExp(lookup_table)))
-    par_matr_index <- sample(1:length(prob_vec), size=1, prob = prob_vec)
-    parents <- names(lookup_table)[par_matr_index]
-    index_set_parents <- as.numeric(unlist(strsplit(parents, ",")))
-    G[i, index_set_parents] <- 1
+    skel_idx <- sample(1:length(prob_vec), size=1, prob=prob_vec)
+    parents <- par_sets[skel_idx,1:numpars_vec[skel_idx]]
+    G[i, parents] <- 1
   }
   return(G)
+}
+sample_plus_graph <- function(score_plus_list, prec, map_pars,
+                              banned_plus_list, banned_map_pars, plus_pars){
+  N <- length(score_plus_list)
+  G <- matrix(0, nrow=N, ncol=N)
+  for(i in 1:N){
+    N_plus_sets <- ncol(banned_plus_list[[i]])
+    tot_scores <- banned_plus_list[[i]][banned_map_pars[i],]
+    prob_vec <- as.numeric(exp(tot_scores - logSumExp(tot_scores)))
+    out_idx <- sample(1:N_plus_sets, size=1, prob=prob_vec)
+    
+    valid_rows <- banned_map_pars$valid_pset_rows[[i]]
+    lookup_table <- score_plus_list[[i]][[out_idx]][valid_rows,]
+    par_sets <- map_pars$par_pset[[i]][valid_rows,]
+    numpars_vec <- map_pars$numpars_vec[[i]][valid_rows]
+    prob_vec2 <- as.numeric(exp(lookup_table-logSumExp(lookup_table)))
+    skel_idx <- sample(1:length(prob_vec2), size=1, prob=prob_vec2)
+    out_parents <- plus_pars$par_pset[[i]][out_idx,1:plus_pars$numpars_vec[[i]][out_idx]]
+    skel_parents <- par_sets[skel_idx,1:numpars_vec[skel_idx]]
+    parents <- c(out_parents, skel_parents)
+    G[i, parents] <- 1
+  }
+  return(G)
+}
+plus_parents_mapping <- function(H, plus_amt, map_pars, blacklist=NULL){
+  N <- ncol(H)
+  plus_list <- vector(mode="list", length=N)
+  numpars_list <- vector(mode="list", length=N)
+  for(i in 1:N){
+    outside_set <- setdiff(1:N, c(i, map_pars$par_names[[i]]))
+    if(!is.null(blacklist)){
+      outside_set <- setdiff(outside_set, blacklist[[i]])
+    }
+    N_nonparents <- length(outside_set)
+    if(N_nonparents==0){
+      par_list[[i]] <- matrix(NA, nrow=1, ncol=1)
+      numpars_list[[i]] <- 0
+    }
+    else{
+      numpars_vec <- vector(mode="numeric", 
+                            length=sum(choose(N_nonparents, 0:plus_amt)))
+      numpars_vec[1] <- 0
+      iter <- 2
+      nonparent_matrix <- rep(NA, times=plus_amt)
+      for(r in 1:plus_amt){
+        num_add <- choose(N_nonparents, r)
+        numpars_vec[c(iter:(iter+num_add-1))] <- r
+        new_row <- combinations(N_nonparents, r, outside_set)
+        if(r < plus_amt){
+          for(j in 1:(plus_amt-r))
+            new_row <- cbind(new_row, NA)
+        }
+        nonparent_matrix <- rbind(nonparent_matrix, new_row)
+        iter <- iter + num_add
+      }
+      plus_list[[i]] <- nonparent_matrix
+      numpars_list[[i]] <- numpars_vec
+    }
+  }
+  return(list("par_pset"=plus_list, "numpars_vec"=numpars_list))
 }
 #description: creates the edge weights based on the chain
 #parameters:  selected - N*N matrix of # times each edge is selected
