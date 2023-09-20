@@ -143,27 +143,28 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, e_t, alpha, beta,
     # K_Ht <- max(rowSums(H_t))
     # l <- K_t - K_Ht
     l <- 1
+    plus_pars <- plus_parents_mapping(H_t, l, map_pars)
     #sample new order
     prec_prime <- implement_order_v2(prec_t, move_type,
                                      space_banned_score_list, map_pars)
     prec_t_plus1 <- sample_from_2_orders(prec_t, prec_prime, 
                                          space_banned_score_list, map_pars)
     
+    banned_pars <- banned_parents_mapping(map_pars, prec_t_plus1, TRUE)
     #sample new graph
-    order_score_list <- generate_order_table(prec_t_plus1, H_t, param, 
-                                             map_pars, has_scores=TRUE,
-                                             H_scores=full_score_list)
-    graph_t_plus1 <- sample_graph(order_score_list)
+    graph_t_plus1 <- sample_graph(full_score_list, prec_t_plus1, map_pars, 
+                                  banned_pars)
     
     
     #create a set of extra graphs to permanently add to the space
     G_set <- vector(mode="list", length=d)
-    order_score_list_new <- 
-      generate_order_plus_table(prec_t_plus1, H_t, max(l, 1), 
-                                param, map_pars, has_scores=TRUE, 
-                                H_scores=full_score_list)
+    plus_score_list <- score_plus_space(H_t, map_pars, plus_pars, param, 
+                                        has_scores=TRUE, H_scores=full_score_list)
+    plus_banned_list <- create_banned_plus_parent_table(H_t, map_pars, plus_pars,
+                                                        plus_score_list$full_list)
     for(i in 1:d){
-      temp <- sample_graph(order_score_list_new$full_list)
+      temp <- sample_plus_graph(plus_score_list$full_list, prec_t_plus1, map_pars,
+                                plus_banned_list, banned_pars, plus_pars)
       G_set[[i]] <- temp
     }
     if(verbose){print("pre-expand")}
@@ -190,16 +191,14 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, e_t, alpha, beta,
                                      space_banned_score_list, map_pars)
     prec_t_plus1 <- sample_from_2_orders(prec_t, prec_prime, 
                                          space_banned_score_list, map_pars)
-    order_score_list <- generate_order_table(prec_t_plus1, H_t, param,
-                                             map_pars, has_scores=TRUE,
-                                             H_scores=full_score_list)
+    banned_pars <- banned_parents_mapping(map_pars, prec_t_plus1, TRUE)
     
     #standard inventory of current search space sparsity
     # K_Ht <- max(rowSums(H_t))
     # l <- K_t - K_Ht
     
     #standard sampling of graph
-    graph_t_plus1 <- sample_graph(order_score_list)
+    graph_t_plus1 <- sample_graph(full_score_list, prec_t_plus1, map_pars, banned_pars)
     
     #standard update of the search space
     H_t_plus1 <- H_t
@@ -1188,12 +1187,18 @@ sample_graph <- function(score_list, prec, map_pars, banned_map_pars){
   for(i in 1:N){
     valid_rows <- banned_map_pars$valid_pset_rows[[i]]
     lookup_table <- score_list[[i]][valid_rows,]
-    par_sets <- map_pars$par_pset[[i]][valid_rows,]
     numpars_vec <- map_pars$numpars_vec[[i]][valid_rows]
+    if(numpars_vec[length(numpars_vec)]==1){
+      par_sets <- as.matrix(map_pars$par_pset[[i]][valid_rows,], ncol=1)
+    }
+    else{par_sets <- map_pars$par_pset[[i]][valid_rows,]}
+    
     prob_vec <- as.numeric(exp(lookup_table-logSumExp(lookup_table)))
     skel_idx <- sample(1:length(prob_vec), size=1, prob=prob_vec)
-    parents <- par_sets[skel_idx,1:numpars_vec[skel_idx]]
-    G[i, parents] <- 1
+    if(skel_idx != 1){
+      parents <- par_sets[skel_idx,1:numpars_vec[skel_idx]]
+      G[i, parents] <- 1
+    }
   }
   return(G)
 }
@@ -1203,19 +1208,28 @@ sample_plus_graph <- function(score_plus_list, prec, map_pars,
   G <- matrix(0, nrow=N, ncol=N)
   for(i in 1:N){
     N_plus_sets <- ncol(banned_plus_list[[i]])
-    tot_scores <- banned_plus_list[[i]][banned_map_pars[i],]
+    tot_scores <- banned_plus_list[[i]][banned_map_pars$banned_row[i],]
     prob_vec <- as.numeric(exp(tot_scores - logSumExp(tot_scores)))
     out_idx <- sample(1:N_plus_sets, size=1, prob=prob_vec)
     
     valid_rows <- banned_map_pars$valid_pset_rows[[i]]
+    # print(score_plus_list[[i]][[out_idx]])
     lookup_table <- score_plus_list[[i]][[out_idx]][valid_rows,]
-    par_sets <- map_pars$par_pset[[i]][valid_rows,]
     numpars_vec <- map_pars$numpars_vec[[i]][valid_rows]
+    if(numpars_vec[length(numpars_vec)]==1){
+      par_sets <- as.matrix(map_pars$par_pset[[i]][valid_rows,], ncol=1)
+    }
+    else{par_sets <- map_pars$par_pset[[i]][valid_rows,]}
     prob_vec2 <- as.numeric(exp(lookup_table-logSumExp(lookup_table)))
     skel_idx <- sample(1:length(prob_vec2), size=1, prob=prob_vec2)
     out_parents <- plus_pars$par_pset[[i]][out_idx,1:plus_pars$numpars_vec[[i]][out_idx]]
-    skel_parents <- par_sets[skel_idx,1:numpars_vec[skel_idx]]
-    parents <- c(out_parents, skel_parents)
+    if(skel_idx != 1){
+      skel_parents <- par_sets[skel_idx,1:numpars_vec[skel_idx]]
+      parents <- c(out_parents, skel_parents)
+    }
+    else{
+      parents <- out_parents
+    }
     G[i, parents] <- 1
   }
   return(G)
