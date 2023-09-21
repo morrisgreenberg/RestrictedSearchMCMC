@@ -155,3 +155,10 @@ p1 <- ggplot(full_sim_data_long, aes(x=iter, y=count, color=edge_count_type,
   theme_tuned
 
 
+index_post_burn <- which(full_sim_data$`True Positive Edges`==sum(trueDAGedges>0))
+
+mean_edge_est <- t(apply(res_sim$graphs[,,index_post_burn:Bs], c(1,2), mean))
+
+library(pROC)
+plot(roc(as.numeric(trueDAGedges > 0),as.numeric(mean_edge_est)))
+auc(roc(as.numeric(trueDAGedges > 0),as.numeric(mean_edge_est)))
