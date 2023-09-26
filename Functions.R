@@ -21,6 +21,7 @@
 #             start_contract - step in the chain where contraction begins
 #             bound_contract - bound of minimal number of steps an edge
 #                              needs to be considered before removing it
+#             blacklist - list of any parent structures that are not allowed
 #             move_type - how to propose move types. Three current methods:
 #                         a. relocate - always performs node relocation
 #                         b. random - node relocation (NR) 1/3 of the time,
@@ -32,7 +33,7 @@
 graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5, 
                        rho=1/1000, zeta=0.85, start_epsilon=0.1, d=5, 
                        thresh=0.2, B=25000, start_contract=20,
-                       bound_contract=100,
+                       bound_contract=100,  blacklist=NULL,
                        move_type="relocate", verbose=TRUE){
   N <- nrow(H_0)
   prec_b <- 1:N
@@ -42,6 +43,11 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
   mappings <- parents_mapping(H_0)
   full_scores <- score_full_space(H_0, mappings,param, N)
   banned_scores <- create_banned_parent_table(H_0, mappings,full_scores, N)
+  plus_mappings <- plus_parents_mapping(H_0, 1, mappings, blacklist)
+  full_plus_scores <- score_plus_space(H_0, mappings, plus_mappings, param, N, 
+                                       has_scores_orig = TRUE, H_scores=full_scores)
+  banned_plus_scores <- create_banned_plus_parent_table(H_0, mappings, plus_mappings,
+                                                        full_plus_scores$full_list)
   Gs <- array(dim=c(N, N, B))
   precs <- matrix(nrow=B, ncol=N)
   Hs <- array(dim=c(N, N, B))
@@ -59,9 +65,11 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
     sampler_step <- mcmc_sampler_step(prec_b, H_b, K_b, epsilon_b, 
                                       alpha, beta, selected, considered, 
                                       b, d, banned_scores, mappings,
-                                      full_scores, param, lambda, rho,
+                                      full_scores, banned_plus_scores, 
+                                      plus_mappings, full_plus_scores,
+                                      param, lambda, rho,
                                       thresh, start_contract, move_type,
-                                      bound_contract, verbose)
+                                      bound_contract, blacklist, verbose)
     
     Gs[,,b] <- sampler_step$G_t_plus1
     H_b <- sampler_step$H_t_plus1
@@ -75,6 +83,9 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
     banned_scores <- sampler_step$banned_scores
     full_scores <- sampler_step$order_scores
     mappings <- sampler_step$par_mappings
+    banned_plus_scores <- sampler_step$banned_plus_scores
+    full_plus_scores <- sampler_step$order_plus_scores
+    plus_mappings <- sampler_step$plus_par_mappings
     weights_matr[,,b] <- sampler_step$weights
     epsilon_b <- start_epsilon/(b^zeta)
   }
@@ -117,10 +128,13 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
 mcmc_sampler_step <- function(prec_t, H_t, K_t, e_t, alpha, beta, 
                               selected, considered, t, d, 
                               space_banned_score_list, map_pars,
-                              full_score_list, param, lamb, rho,
+                              full_score_list, plus_banned_list, 
+                              plus_pars, plus_score_list,
+                              param, lamb, rho,
                               thresh, start_contract, move_probs, 
-                              bound_contract, verbose){
+                              bound_contract, blacklist, verbose){
   N <- nrow(H_t)
+  l <- 1
   #sampling whether we do any expansion/contraction steps
   is_contraction <- sample(c(T, F), size=1, prob=c(1/sqrt(t), 1-1/sqrt(t)))
   is_expansion <- sample(c(T, F), size=1, prob=c(1/sqrt(t), 1-1/sqrt(t)))
@@ -142,8 +156,8 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, e_t, alpha, beta,
     #considering the current space, and create new space scores for expansion
     # K_Ht <- max(rowSums(H_t))
     # l <- K_t - K_Ht
-    l <- 1
-    plus_pars <- plus_parents_mapping(H_t, l, map_pars)
+    # l <- 1
+    # plus_pars <- plus_parents_mapping(H_t, l, map_pars)
     #sample new order
     prec_prime <- implement_order_v2(prec_t, move_type,
                                      space_banned_score_list, map_pars)
@@ -158,10 +172,6 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, e_t, alpha, beta,
     
     #create a set of extra graphs to permanently add to the space
     G_set <- vector(mode="list", length=d)
-    plus_score_list <- score_plus_space(H_t, map_pars, plus_pars, param, 
-                                        has_scores=TRUE, H_scores=full_score_list)
-    plus_banned_list <- create_banned_plus_parent_table(H_t, map_pars, plus_pars,
-                                                        plus_score_list$full_list)
     for(i in 1:d){
       temp <- sample_plus_graph(plus_score_list$full_list, prec_t_plus1, map_pars,
                                 plus_banned_list, banned_pars, plus_pars)
@@ -173,15 +183,23 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, e_t, alpha, beta,
     update_nodes <- space_output$updatenodes
     new_mappings <- parents_mapping(H_t_plus1, N, update_nodes,
                                     TRUE, map_pars)
-    N_curr <- ncol(H_t_plus1)
     new_full_scores <- score_full_space(H_t_plus1, new_mappings,
-                                        param, N_curr, update_nodes, 
+                                        param, N, update_nodes, 
                                         TRUE, full_score_list)
     if(verbose){print("post-expand")}
     new_banned_scores <- 
       create_banned_parent_table(H_t_plus1, new_mappings, new_full_scores, 
-                                 N_curr,update_nodes, TRUE,
+                                 N,update_nodes, TRUE,
                                  space_banned_score_list)
+    new_plus_mappings <- plus_parents_mapping(H_t_plus1, l, new_mappings, blacklist)
+    new_plus_scores <- score_plus_space(H_t_plus1, new_mappings, new_plus_mappings, 
+                                        param, N, update_nodes, TRUE, new_full_scores,
+                                        TRUE, plus_score_list)
+    new_banned_plus_scores <- create_banned_plus_parent_table(H_t_plus1, new_mappings,
+                                                              new_plus_mappings, 
+                                                              new_plus_scores$full_list,
+                                                              N, update_nodes, TRUE,
+                                                              plus_banned_list)
     if(verbose){print("post-banned")}
   }
   
@@ -206,6 +224,9 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, e_t, alpha, beta,
       new_full_scores <- full_score_list
       new_banned_scores <- space_banned_score_list
       new_mappings <- map_pars
+      new_plus_mappings <- plus_pars
+      new_plus_scores <- plus_score_list
+      new_banned_plus_scores <- plus_banned_list
     }
   }
   
@@ -224,15 +245,23 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, e_t, alpha, beta,
       update_nodes <- space_output$updatenodes
       new_mappings <- parents_mapping(H_t_plus1, N, update_nodes,
                                       TRUE, map_pars)
-      N_curr <- ncol(H_t_plus1)
       new_full_scores <- score_full_space(H_t_plus1, new_mappings,
-                                          param, N_curr, update_nodes, 
+                                          param, N, update_nodes, 
                                           TRUE, full_score_list)
       if(verbose){print("post-shrink")}
       new_banned_scores <- 
         create_banned_parent_table(H_t_plus1, new_mappings,new_full_scores, 
-                                   N_curr,update_nodes, TRUE,
+                                   N,update_nodes, TRUE,
                                    space_banned_score_list)
+      new_plus_mappings <- plus_parents_mapping(H_t_plus1, l, new_mappings, blacklist)
+      new_plus_scores <- score_plus_space(H_t_plus1, new_mappings, new_plus_mappings, 
+                                          param, N, update_nodes, TRUE, new_full_scores,
+                                          TRUE, plus_score_list)
+      new_banned_plus_scores <- create_banned_plus_parent_table(H_t_plus1, new_mappings,
+                                                                new_plus_mappings, 
+                                                                new_plus_scores$full_list,
+                                                                N, update_nodes, TRUE,
+                                                                plus_banned_list)
       if(verbose){print("post-banned")}
     }
     else{
@@ -242,16 +271,24 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, e_t, alpha, beta,
       update_nodes <- space_output$updatenodes
       new_mappings <- parents_mapping(H_t_plus1, N, update_nodes,
                                       TRUE, map_pars)
-      N_curr <- ncol(H_t_plus1)
       new_full_scores <- score_full_space(H_t_plus1, new_mappings,
-                                          param, N_curr, update_nodes, 
+                                          param, N, update_nodes, 
                                           TRUE, full_score_list)
       if(verbose){print("post-shrink")}
       new_banned_scores <- 
         create_banned_parent_table(H_t_plus1, new_mappings,
-                                   new_full_scores, N_curr,
+                                   new_full_scores, N,
                                    update_nodes, TRUE, 
                                    space_banned_score_list)
+      new_plus_mappings <- plus_parents_mapping(H_t_plus1, l, new_mappings, blacklist)
+      new_plus_scores <- score_plus_space(H_t_plus1, new_mappings, new_plus_mappings, 
+                                          param, N, update_nodes, TRUE, new_full_scores,
+                                          TRUE, plus_score_list)
+      new_banned_plus_scores <- create_banned_plus_parent_table(H_t_plus1, new_mappings,
+                                                                new_plus_mappings, 
+                                                                new_plus_scores$full_list,
+                                                                N, update_nodes, TRUE,
+                                                                plus_banned_list)
       if(verbose){print("post-banned")}
     }
     
@@ -271,6 +308,9 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, e_t, alpha, beta,
               order_scores = new_full_scores, 
               banned_scores = new_banned_scores,
               par_mappings = new_mappings,
+              order_plus_scores = new_plus_scores,
+              banned_plus_scores = new_banned_plus_scores,
+              plus_par_mappings = new_plus_mappings,
               weights = weights_new))
   
 }
@@ -368,13 +408,14 @@ score_full_space <- function(H, map_pars, param,
 }
 score_plus_space <- function(H, map_pars, plus_pars, param,
                              N=ncol(H), updatenodes=1:N,
-                             has_scores_orig=FALSE, H_scores=NULL){
+                             has_scores_orig=FALSE, H_scores=NULL, 
+                             has_plus_orig=FALSE, H_plus_scores=NULL){
   tot_scores <- vector(mode="list", length=N)
   score_list <- vector(mode="list", length=N)
   for(i in 1:N){
-    if(!(i %in% updatenodes) & has_scores_orig){
-      score_list[[i]] <- H_scores[[i]]
-      tot_scores[[i]] <- logSumExp(H_scores[[i]])
+    if(!(i %in% updatenodes) & has_plus_orig){
+      score_list[[i]] <- H_plus_scores$full_list[[i]]
+      tot_scores[[i]] <- H_plus_scores$tot_scores_add[[i]]
     }
     else{
       combos <- map_pars$par_pset[[i]]
@@ -959,7 +1000,6 @@ sample_plus_graph <- function(score_plus_list, prec, map_pars,
     out_idx <- sample(1:N_plus_sets, size=1, prob=prob_vec)
     
     valid_rows <- banned_map_pars$valid_pset_rows[[i]]
-    # print(score_plus_list[[i]][[out_idx]])
     lookup_table <- score_plus_list[[i]][[out_idx]][valid_rows,]
     numpars_vec <- map_pars$numpars_vec[[i]][valid_rows]
     if(numpars_vec[length(numpars_vec)]==1){

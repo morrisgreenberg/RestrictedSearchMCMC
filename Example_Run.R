@@ -8,6 +8,28 @@ library(RBGL)
 
 source("./Functions.R")
 
+
+theme_tuned <- ggplot2::theme(legend.position="bottom",
+                              legend.direction="horizontal",
+                              legend.key = element_rect(fill="white"),
+                              legend.box="vertical", 
+                              legend.margin=margin(),
+                              text = element_text(family="serif", size = 11, color = "black"),
+                              panel.background = element_blank(),
+                              panel.grid.major = element_blank(), 
+                              panel.grid.minor = element_blank(),
+                              plot.title = element_text(family="serif", size = 12, face = "bold", 
+                                                        hjust=0.5, margin = margin(b = 20, r=0, l=0, t=20)),
+                              plot.caption = element_text(family="serif", hjust = 0),
+                              strip.background = element_blank(), 
+                              axis.line = element_line(color="black", size = .25),
+                              axis.ticks.x  = element_blank(),
+                              axis.text.x=element_text (color = "black"),
+                              axis.text.y=element_text (color = "black"))
+
+
+
+
 set.seed(101)
 trueDAGedges <- as(pcalg::randDAG(n = 20, d = 4, 
                                   wFUN = list(runif, min=0.4, max=2)), "matrix")
@@ -157,7 +179,7 @@ p1 <- ggplot(full_sim_data_long, aes(x=iter, y=count, color=edge_count_type,
 
 index_post_burn <- which(full_sim_data$`True Positive Edges`==sum(trueDAGedges>0))
 
-mean_edge_est <- t(apply(res_sim$graphs[,,index_post_burn:Bs], c(1,2), mean))
+mean_edge_est <- t(apply(dater$graphs[,,index_post_burn[1]:Bs], c(1,2), mean))
 
 library(pROC)
 plot(roc(as.numeric(trueDAGedges > 0),as.numeric(mean_edge_est)))
