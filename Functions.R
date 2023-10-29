@@ -15,6 +15,7 @@
 #             zeta - exponent for tolerance threshold, between 0 and 1
 #                    (weight of 1 causes inv-linear decay, less is inv-sublinear)
 #             start_epsilon - tolerance at step 1 of the chain
+#             bounce - probability we bounce to a random graph in the space in the proposal
 #             d - number of graphs to sample at expansion steps
 #             thresh - threshold to add edges to the space from the d samples
 #             B - number of steps of the chain
@@ -31,13 +32,14 @@
 #             verbose - prints the step in the chain number if TRUE, and when
 #                       shrinking/expanding occurs
 graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5, 
-                       rho=1/1000, zeta=0.85, start_epsilon=0.1, d=5, 
-                       thresh=0.2, B=25000, start_contract=20,
-                       bound_contract=100,  blacklist=NULL,
-                       move_type="relocate", verbose=TRUE){
+                       rho=1/1000, zeta=0.85, start_epsilon=0.1, 
+                       bounce=0.005, d=5, thresh=0.2, B=25000, 
+                       start_contract=20, bound_contract=100,  
+                       blacklist=NULL, move_type="relocate", verbose=TRUE){
   N <- nrow(H_0)
   prec_b <- 1:N
   K_b <- round(sqrt(N/2))
+  G_b <- matrix(0, nrow=N, ncol=N)
   H_b <- H_0
   epsilon_b <- start_epsilon
   mappings <- parents_mapping(H_0)
@@ -62,16 +64,17 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
         print(paste("b: ", b))
       }
     }
-    sampler_step <- mcmc_sampler_step(prec_b, H_b, K_b, epsilon_b, 
+    sampler_step <- mcmc_sampler_step(prec_b, G_b, H_b, K_b, epsilon_b, 
                                       alpha, beta, selected, considered, 
                                       b, d, banned_scores, mappings,
                                       full_scores, banned_plus_scores, 
                                       plus_mappings, full_plus_scores,
-                                      param, lambda, rho,
+                                      param, lambda, rho, bounce, 
                                       thresh, start_contract, move_type,
                                       bound_contract, blacklist, verbose)
     
-    Gs[,,b] <- sampler_step$G_t_plus1
+    G_b <- sampler_step$G_t_plus1
+    Gs[,,b] <- G_b
     H_b <- sampler_step$H_t_plus1
     Hs[,,b] <- H_b
     prec_b <- sampler_step$prec_t_plus1
@@ -96,6 +99,7 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
 
 #description: 1 step of the MCMC sampler
 #parameters:  prec_t - order at step t
+#             G_t - graph at step t
 #             H_t - search space at step t
 #             K_t - sparsity at step t (currently on hold)
 #             e_t - shrinkage threshold at step t
@@ -113,6 +117,7 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
 #             rho - exponent in shrinkage weights, between 0 and 1 
 #                   (larger weight means quicker to approach a denominator of
 #                    num of total steps instead of num of considered steps)
+#             bounce - probability we bounce to a random graph in the space in the proposal
 #             thresh - threshold to add edges to the space from the d samples
 #             start_contract - step in the chain where contraction begins
 #             move_probs - how to propose move types. Three current methods:
@@ -125,12 +130,12 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
 #                              needs to be considered before removing it
 #             verbose - prints the step in the chain number if TRUE, and when
 #                       shrinking/expanding occurs
-mcmc_sampler_step <- function(prec_t, H_t, K_t, e_t, alpha, beta, 
+mcmc_sampler_step <- function(prec_t, G_t, H_t, K_t, e_t, alpha, beta, 
                               selected, considered, t, d, 
                               space_banned_score_list, map_pars,
                               full_score_list, plus_banned_list, 
                               plus_pars, plus_score_list,
-                              param, lamb, rho,
+                              param, lamb, rho, bounce,
                               thresh, start_contract, move_probs, 
                               bound_contract, blacklist, verbose){
   N <- nrow(H_t)
@@ -138,6 +143,7 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, e_t, alpha, beta,
   #sampling whether we do any expansion/contraction steps
   is_contraction <- sample(c(T, F), size=1, prob=c(1/sqrt(t), 1-1/sqrt(t)))
   is_expansion <- sample(c(T, F), size=1, prob=c(1/sqrt(t), 1-1/sqrt(t)))
+  is_bounce <- sample(c(T, F), size=1, prob=c(bounce, 1-bounce))
   
   #sampling move type
   if(move_probs=="Kuipers"){
@@ -159,24 +165,57 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, e_t, alpha, beta,
     # l <- 1
     # plus_pars <- plus_parents_mapping(H_t, l, map_pars)
     #sample new order
-    prec_prime <- implement_order_v2(prec_t, move_type,
-                                     space_banned_score_list, map_pars)
-    prec_t_plus1 <- sample_from_2_orders(prec_t, prec_prime, 
-                                         space_banned_score_list, map_pars)
-    
-    banned_pars <- banned_parents_mapping(map_pars, prec_t_plus1, TRUE)
-    #sample new graph
-    graph_t_plus1 <- sample_graph(full_score_list, prec_t_plus1, map_pars, 
-                                  banned_pars)
-    
-    
-    #create a set of extra graphs to permanently add to the space
-    G_set <- vector(mode="list", length=d)
-    for(i in 1:d){
-      temp <- sample_plus_graph(plus_score_list$full_list, prec_t_plus1, map_pars,
-                                plus_banned_list, banned_pars, plus_pars)
-      G_set[[i]] <- temp
+    if(!is_bounce){
+      prec_prime <- implement_order_v2(prec_t, move_type,
+                                       space_banned_score_list, map_pars)
+      prec_t_plus1 <- sample_from_2_orders(prec_t, prec_prime, 
+                                           space_banned_score_list, map_pars)
+      banned_pars <- banned_parents_mapping(map_pars, prec_t_plus1, TRUE)
+      graph_t_plus1 <- sample_graph(full_score_list, prec_t_plus1, map_pars, 
+                                    banned_pars)
+      G_set <- vector(mode="list", length=d)
+      #create a set of extra graphs to permanently add to the space
+      for(i in 1:d){
+        temp <- sample_plus_graph(plus_score_list$full_list, prec_t_plus1, map_pars,
+                                  plus_banned_list, banned_pars, plus_pars)
+        G_set[[i]] <- temp
+      }
+      
     }
+    else{
+      if(verbose){print("bouncing proposed")}
+      prec_prime <- implement_order_random(prec_t)
+      graph_prime <- sample_graph_random(prec_prime)
+      banned_pars_prime <- banned_parents_mapping(map_pars, prec_prime, TRUE)
+      banned_pars <- banned_parents_mapping(map_pars, prec_t, TRUE)
+      graph_output <- sample_from_2_graphs(G_t, graph_prime, full_score_list, map_pars, param)
+      graph_t_plus1 <- graph_output$graph
+      if(graph_output$choice == "t"){
+        if(verbose){print("bouncing rejected")}
+        prec_t_plus1 <- prec_t
+        G_set <- vector(mode="list", length=d)
+        #create a set of extra graphs to permanently add to the space
+        for(i in 1:d){
+          temp <- sample_plus_graph(plus_score_list$full_list, prec_t_plus1, map_pars,
+                                    plus_banned_list, banned_pars, plus_pars)
+          G_set[[i]] <- temp
+        }
+      }
+      else{
+        if(verbose){print("bouncing accepted")}
+        prec_t_plus1 <- prec_prime
+        G_set <- vector(mode="list", length=d+1)
+        #create a set of extra graphs to permanently add to the space
+        for(i in 1:d){
+          temp <- sample_plus_graph(plus_score_list$full_list, prec_t_plus1, map_pars,
+                                    plus_banned_list, banned_pars_prime, plus_pars)
+          G_set[[i]] <- temp
+        }
+        G_set[[d+1]] <- graph_t_plus1
+      }
+    }
+    
+    
     if(verbose){print("pre-expand")}
     space_output <- expand_search_space(H_t, G_set, thresh)
     H_t_plus1 <- space_output$H_new
@@ -205,28 +244,75 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, e_t, alpha, beta,
   
   else{
     #standard sampling of an order
-    prec_prime <- implement_order_v2(prec_t, move_type, 
-                                     space_banned_score_list, map_pars)
-    prec_t_plus1 <- sample_from_2_orders(prec_t, prec_prime, 
-                                         space_banned_score_list, map_pars)
-    banned_pars <- banned_parents_mapping(map_pars, prec_t_plus1, TRUE)
-    
-    #standard inventory of current search space sparsity
-    # K_Ht <- max(rowSums(H_t))
-    # l <- K_t - K_Ht
-    
-    #standard sampling of graph
-    graph_t_plus1 <- sample_graph(full_score_list, prec_t_plus1, map_pars, banned_pars)
-    
-    #standard update of the search space
-    H_t_plus1 <- H_t
-    if((t < start_contract ) | (!is_contraction)){
-      new_full_scores <- full_score_list
-      new_banned_scores <- space_banned_score_list
-      new_mappings <- map_pars
-      new_plus_mappings <- plus_pars
-      new_plus_scores <- plus_score_list
-      new_banned_plus_scores <- plus_banned_list
+    if(!is_bounce){
+      prec_prime <- implement_order_v2(prec_t, move_type, 
+                                       space_banned_score_list, map_pars)
+      prec_t_plus1 <- sample_from_2_orders(prec_t, prec_prime, 
+                                           space_banned_score_list, map_pars)
+      banned_pars <- banned_parents_mapping(map_pars, prec_t_plus1, TRUE)
+      
+      #standard inventory of current search space sparsity
+      # K_Ht <- max(rowSums(H_t))
+      # l <- K_t - K_Ht
+      
+      #standard sampling of graph
+      graph_t_plus1 <- sample_graph(full_score_list, prec_t_plus1, map_pars, banned_pars)
+      
+      #standard update of the search space
+      H_t_plus1 <- H_t
+      if((t < start_contract ) | (!is_contraction)){
+        new_full_scores <- full_score_list
+        new_banned_scores <- space_banned_score_list
+        new_mappings <- map_pars
+        new_plus_mappings <- plus_pars
+        new_plus_scores <- plus_score_list
+        new_banned_plus_scores <- plus_banned_list
+      }
+    }
+    else{
+      if(verbose){print("bouncing proposed")}
+      prec_prime <- implement_order_random(prec_t)
+      graph_prime <- sample_graph_random(prec_prime)
+      graph_output <- sample_from_2_graphs(G_t, graph_prime, full_score_list, map_pars, param)
+      graph_t_plus1 <- graph_output$graph
+      if(graph_output$choice == "t"){
+        if(verbose){print("bouncing rejected")}
+        prec_t_plus1 <- prec_t
+        H_t_plus1 <- H_t
+        if((t < start_contract ) | (!is_contraction)){
+          new_full_scores <- full_score_list
+          new_banned_scores <- space_banned_score_list
+          new_mappings <- map_pars
+          new_plus_mappings <- plus_pars
+          new_plus_scores <- plus_score_list
+          new_banned_plus_scores <- plus_banned_list
+        }
+      }
+      else{
+        if(verbose){print("bouncing accepted")}
+        prec_t_plus1 <- prec_prime
+        space_output <- expand_search_space(H_t, list(graph_t_plus1), thresh)
+        H_t_plus1 <- space_output$H_new
+        update_nodes <- space_output$updatenodes
+        new_mappings <- parents_mapping(H_t_plus1, N, update_nodes,
+                                        TRUE, map_pars)
+        new_full_scores <- score_full_space(H_t_plus1, new_mappings,
+                                            param, N, update_nodes, 
+                                            TRUE, full_score_list)
+        new_banned_scores <- 
+          create_banned_parent_table(H_t_plus1, new_mappings, new_full_scores, 
+                                     N,update_nodes, TRUE,
+                                     space_banned_score_list)
+        new_plus_mappings <- plus_parents_mapping(H_t_plus1, l, new_mappings, blacklist)
+        new_plus_scores <- score_plus_space(H_t_plus1, new_mappings, new_plus_mappings, 
+                                            param, N, update_nodes, TRUE, new_full_scores,
+                                            TRUE, plus_score_list)
+        new_banned_plus_scores <- create_banned_plus_parent_table(H_t_plus1, new_mappings,
+                                                                  new_plus_mappings, 
+                                                                  new_plus_scores$full_list,
+                                                                  N, update_nodes, TRUE,
+                                                                  plus_banned_list)
+      }
     }
   }
   
@@ -530,8 +616,14 @@ create_banned_plus_parent_table <- function(H, map_pars, plus_pars,
       P_local<-matrix(nrow=N_psets, ncol=N_outside)
       
       for(j in 1:N_outside){
-        P_local[N_psets, j] <- score_plus_list[[i]][[j]][1,1]
-        P_local[1, j] <- logSumExp(score_plus_list[[i]][[j]][,1])
+        if(N_outside==1){
+          P_local[N_psets, j] <- score_plus_list[[i]][1,1]
+          P_local[1, j] <- logSumExp(score_plus_list[[i]][,1])
+        }
+        else{
+          P_local[N_psets, j] <- score_plus_list[[i]][[j]][1,1]
+          P_local[1, j] <- logSumExp(score_plus_list[[i]][[j]][,1])
+        }
         cutoff <- 1
         if(N_psets > 2){
           for(l in 1:(N_ps-1)){
@@ -539,7 +631,14 @@ create_banned_plus_parent_table <- function(H, map_pars, plus_pars,
             for(k in (N_psets-1):min(cutoff, N_psets-1)){
               poset_pnodes <- poset_pt[[i]][k, c(1:revnumpar_vec[[i]][k])]
               p_total <- logSumExp(P_local[poset_pnodes, j])-log(N_ps-revnumpar_vec[[i]][k]-l+1)
-              conj_score <- score_plus_list[[i]][[j]][map_pars$maps[[i]]$backwards[N_psets-map_pars$maps[[i]]$forward[k]+1],1]
+              ind_curr <- map_pars$maps[[i]]$backwards[N_psets-map_pars$maps[[i]]$forward[k]+1]
+              if(N_outside == 1){
+                conj_score <- score_plus_list[[i]][ind_curr,1]
+              }
+              else{
+                conj_score <- score_plus_list[[i]][[j]][ind_curr,1]
+              }
+              
               max_amt <- max(conj_score, p_total)
               P_local[k, j] <- log(exp(conj_score-max_amt)+exp(p_total-max_amt))+max_amt
             }
@@ -853,6 +952,12 @@ implement_order_v2 <- function(prec_t, move_type,
                                        map_pars))
   }
 }
+#description: Updates the order randomly
+#parameters:  prec_t - order at current step
+implement_order_random <- function(prec_t){
+  return(sample(prec_t, size=length(prec_t)))
+}
+
 #description: sampling step from M-H to choose between current order and the 
 #             proposal, via the banned parent table
 #parameters:  prec_t - order at current step
@@ -989,6 +1094,30 @@ sample_graph <- function(score_list, prec, map_pars, banned_map_pars){
   }
   return(G)
 }
+#description: samples a graph randomly
+#parameters:  prec - current order
+sample_graph_random <- function(prec){
+  N <- length(prec)
+  G <- matrix(0, nrow=N, ncol=N)
+  for(i in 1:N){
+    index_i <- which(prec==i)
+    if(index_i != N){
+      num_graphs_size <- choose(N, 0:(N-index_i))
+      num_parents <- sample(0:(N-index_i), size=1, prob = num_graphs_size/sum(num_graphs_size))
+      if(num_parents > 0){
+        if(index_i == N-1 & num_parents==1){
+          G[i, prec[N]] <- 1
+        }
+        else{
+          allowed_parents <- sample(prec[(index_i+1):N], size=num_parents)
+          G[i, allowed_parents] <- 1
+        }
+      }
+    }
+  }
+  return(G)
+}
+
 sample_plus_graph <- function(score_plus_list, prec, map_pars,
                               banned_plus_list, banned_map_pars, plus_pars){
   N <- length(score_plus_list)
@@ -1000,7 +1129,12 @@ sample_plus_graph <- function(score_plus_list, prec, map_pars,
     out_idx <- sample(1:N_plus_sets, size=1, prob=prob_vec)
     
     valid_rows <- banned_map_pars$valid_pset_rows[[i]]
-    lookup_table <- score_plus_list[[i]][[out_idx]][valid_rows,]
+    if(!is.null(dim(score_plus_list[[i]]))){
+      lookup_table <- score_plus_list[[i]][valid_rows,]
+    }
+    else{
+      lookup_table <- score_plus_list[[i]][[out_idx]][valid_rows,]
+    }
     numpars_vec <- map_pars$numpars_vec[[i]][valid_rows]
     if(numpars_vec[length(numpars_vec)]==1){
       par_sets <- as.matrix(map_pars$par_pset[[i]][valid_rows,], ncol=1)
@@ -1020,6 +1154,51 @@ sample_plus_graph <- function(score_plus_list, prec, map_pars,
   }
   return(G)
 }
+
+#description: sampling step from M-H to choose between current order and the 
+#             proposal, via the banned parent table
+#parameters:  G_t - graph at current step
+#             G_prime - proposed graph
+#             score_list - score table
+#             map_pars - hash table for quick scoring
+#             param - scoring parameter object, constructed from package BiDAG
+sample_from_2_graphs <- function(G_t, G_prime, score_list,
+                                 map_pars, param){
+  N <- nrow(G_t)
+  score_t <- 0
+  score_prime <- 0
+  for(i in 1:N){
+    pars_t <- which(G_t[i,]==1)
+    pars_prime <- which(G_prime[i,]==1)
+    if(length(pars_t)==0){
+      score_t <- score_t + score_list[[i]][1,]
+    } 
+    else if(min(pars_t %in% map_pars$par_names[[i]])){
+      valid_pars <- which(map_pars$par_names[[i]] %in% pars_t)
+      valid_row <- map_pars$map[[i]]$backwards[sum(2^(valid_pars)/2)+1]
+      score_t <- score_t + score_list[[i]][valid_row,]
+    }
+    else{
+      score_t <- score_t + bge_score_node(i, pars_t, N, param)
+    }
+    if(length(pars_prime)==0){
+      score_prime <- score_prime + score_list[[i]][1,]
+    }
+    else if(min(pars_prime %in% map_pars$par_names[[i]])){
+      valid_pars <- which(map_pars$par_names[[i]] %in% pars_prime)
+      valid_row <- map_pars$map[[i]]$backwards[sum(2^(valid_pars)/2)+1]
+      score_prime <- score_prime + score_list[[i]][valid_row,]
+    }
+    else{
+      score_prime <- score_prime + bge_score_node(i, pars_prime, N, param)
+    }
+  }
+  r <- min(exp(score_prime-score_t), 1)
+  prec_t1 <- sample(c("prime", "t"), size=1, prob=c(r, 1-r))
+  if(prec_t1=="t"){return(list("graph"=G_t, "choice"="t"))}
+  return(list("graph"=G_prime, "choice"="prime"))
+}
+
 plus_parents_mapping <- function(H, plus_amt, map_pars, blacklist=NULL){
   N <- ncol(H)
   plus_list <- vector(mode="list", length=N)
@@ -1031,7 +1210,7 @@ plus_parents_mapping <- function(H, plus_amt, map_pars, blacklist=NULL){
     }
     N_nonparents <- length(outside_set)
     if(N_nonparents==0){
-      par_list[[i]] <- matrix(NA, nrow=1, ncol=1)
+      plus_list[[i]] <- matrix(NA, nrow=1, ncol=1)
       numpars_list[[i]] <- 0
     }
     else{
