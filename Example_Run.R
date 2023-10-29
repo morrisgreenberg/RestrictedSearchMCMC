@@ -84,10 +84,10 @@ probDAGs <- iterativeMCMC(score_par_test, scoreout = TRUE,
                           hardlimit = 16, softlimit = 10,
                           MAP = FALSE, posterior=0.2, alpha=0.4)
 
-mcmc_run <- graph_mcmc(probDAGs$startspace, score_par_test, B=500)
+mcmc_run <- graph_mcmc(probDAGs$startspace, score_par_test, B=1000)
 
 
-Bs <- 500
+Bs <- 1000
 dater <- mcmc_run
 
 total_size <- sapply(1:Bs, function(i){sum(t(dater$spaces[,,i]))})
