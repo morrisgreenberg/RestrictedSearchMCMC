@@ -84,10 +84,10 @@ probDAGs <- iterativeMCMC(score_par_test, scoreout = TRUE,
                           hardlimit = 16, softlimit = 10,
                           MAP = FALSE, posterior=0.2, alpha=0.4)
 
-mcmc_run <- graph_mcmc(probDAGs$startspace, score_par_test, B=1000)
+mcmc_run <- graph_mcmc(probDAGs$startspace, score_par_test, B=5000)
 
 
-Bs <- 1000
+Bs <- 5000
 dater <- mcmc_run
 
 total_size <- sapply(1:Bs, function(i){sum(t(dater$spaces[,,i]))})
@@ -179,7 +179,9 @@ p1 <- ggplot(full_sim_data_long, aes(x=iter, y=count, color=edge_count_type,
 
 index_post_burn <- which(full_sim_data$`True Positive Edges`==sum(trueDAGedges>0))
 
-mean_edge_est <- t(apply(dater$graphs[,,index_post_burn[1]:Bs], c(1,2), mean))
+index_post_burn <- ifelse(length(index_post_burn)>0, index_post_burn[1], floor(1/3*Bs))
+
+mean_edge_est <- t(apply(dater$graphs[,,index_post_burn:Bs], c(1,2), mean))
 
 library(pROC)
 plot(roc(as.numeric(trueDAGedges > 0),as.numeric(mean_edge_est)))

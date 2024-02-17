@@ -324,9 +324,11 @@ mcmc_sampler_step <- function(prec_t, G_t, H_t, K_t, e_t, alpha, beta,
   weights_new <- weights_list$weights_new
   if(is_contraction & (t >= start_contract)){
     #perform contraction of the space
+    n <- param$N
+    set_size <- calculate_set_size(graph_t_plus1, n, N)
     if(is_expansion){
       if(verbose){print("pre-shrink")}
-      space_output <- shrink_search_space(H_t_plus1, weights_new, e_t)
+      space_output <- shrink_search_space_v2(H_t_plus1, weights_new, set_size)
       H_t_plus1 <- space_output$H_new
       update_nodes <- space_output$updatenodes
       new_mappings <- parents_mapping(H_t_plus1, N, update_nodes,
@@ -352,7 +354,9 @@ mcmc_sampler_step <- function(prec_t, G_t, H_t, K_t, e_t, alpha, beta,
     }
     else{
       if(verbose){print("pre-shrink")}
-      space_output <- shrink_search_space(H_t, weights_new, e_t)
+      n <- param$N
+      set_size <- calculate_set_size(graph_t_plus1, n, N)
+      space_output <- shrink_search_space_v2(H_t, weights_new, set_size)
       H_t_plus1 <- space_output$H_new
       update_nodes <- space_output$updatenodes
       new_mappings <- parents_mapping(H_t_plus1, N, update_nodes,
@@ -1295,6 +1299,32 @@ shrink_search_space <- function(H_t, weight_matrix, threshold){
   return(list(H_new=H_new, updatenodes=update_nodes))
   
 }
+
+#description: contracts the space based on the weights and threshold 
+#parameters:  H_t - search space matrix
+#             weight_matrix - set of edge weights matrix
+#             set_size - number of edges for keeping in contracted model
+shrink_search_space_v2 <- function(H_t, weight_matrix, set_size){
+  
+  if(sum(H_t) < set_size){
+    return(list(H_new=H_t, updatenodes=integer(0)))
+  }
+  threshold <- weight_matrix[order(-weight_matrix)[set_size]]
+  H_new <- ((weight_matrix >= threshold) & (H_t))*1
+  added_nodes <- H_new - H_t
+  update_nodes <- c(1:nrow(H_t))[rowSums(added_nodes)>0]
+  return(list(H_new=H_new, updatenodes=update_nodes))
+}
+
+calculate_set_size <- function(G_t, n, p){
+  q_est <- sum(G_t)*2/(p*(p-1))
+  d_est <- max(rowSums(G_t))
+  k_est <- (log(log(p))-log(n)+2*log(d_est*n)-2*log(-log(q_est)))/(log(-log(q_est))-log(d_est*n))
+  k_est <- ifelse(k_est > 0, k_est, 0)
+  h <- 1/8*d_est*(n/log(p))^((1+k_est)/(2+k_est))*3*log(p)/log(2)
+  return(floor(h))
+}
+
 
 # creates power set of "s" items. From the following stackOverflow post: 
 # https://stackoverflow.com/questions/18715580/algorithm-to-calculate-power-set-all-possible-subsets-of-a-set-in-r
