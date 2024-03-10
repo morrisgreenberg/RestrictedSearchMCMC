@@ -1276,7 +1276,8 @@ expand_search_space <- function(H, Gs, thresh=0.2){
   G_all <- matrix(0, nrow=nrow(H), ncol=ncol(H))
   
   for(i in 1:length(Gs)){
-    G_all <- G_all + Gs[[i]]
+    G_new <- BiDAG:::dagadj2cpadj(Gs[[i]])
+    G_all <- G_all + G_new
   }
   G_all <- (G_all/(length(Gs))>thresh)*1
   H_new <- (H + G_all>=1)*1
@@ -1311,6 +1312,7 @@ shrink_search_space_v2 <- function(H_t, weight_matrix, set_size){
   }
   threshold <- weight_matrix[order(-weight_matrix)[set_size]]
   H_new <- ((weight_matrix >= threshold) & (H_t))*1
+  # H_new <- BiDAG:::dagadj2cpadj(H_new)
   added_nodes <- H_new - H_t
   update_nodes <- c(1:nrow(H_t))[rowSums(added_nodes)>0]
   return(list(H_new=H_new, updatenodes=update_nodes))

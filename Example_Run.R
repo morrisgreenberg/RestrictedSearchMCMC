@@ -72,19 +72,18 @@ score_par_test <- scoreparameters("bge", data)
 
 cor_mat <- cor(data)
 
-pc_fit <- pc(suffStat = list(C = cor_mat, n = nrow(data)),
-             indepTest = gaussCItest, ## indep.test: partial correlations
-             alpha = 0.4, labels = paste0("V", 1:ncol(data)),
-             skel.method="stable", verbose = FALSE)
-
+pc_fit <- skeleton(suffStat = list(C = cor_mat, n = nrow(data)),
+                   indepTest = gaussCItest, ## indep.test: partial correlations
+                   alpha = 0.4, labels = paste0("V", 1:ncol(data)),
+                   method="stable", verbose = FALSE)
 
 space_PC <- 1*as(pc_fit@graph, "matrix")
 
-probDAGs <- iterativeMCMC(score_par_test, scoreout = TRUE, 
-                          hardlimit = 16, softlimit = 10,
-                          MAP = FALSE, posterior=0.2, alpha=0.4)
+# probDAGs <- iterativeMCMC(score_par_test, scoreout = TRUE, 
+#                           hardlimit = 16, softlimit = 10,
+#                           MAP = FALSE, posterior=0.2, alpha=0.4)
 
-mcmc_run <- graph_mcmc(probDAGs$startspace, score_par_test, B=5000)
+mcmc_run <- graph_mcmc(space_PC, score_par_test, B=5000)
 
 
 Bs <- 5000
