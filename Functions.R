@@ -33,7 +33,7 @@
 #                       shrinking/expanding occurs
 graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5, 
                        rho=1/1000, zeta=0.85, start_epsilon=0.1, 
-                       bounce=0.005, d=5, thresh=0.2, B=25000, 
+                       bounce=0.000000005, d=1, thresh=0.000000001, B=25000, 
                        start_contract=20, bound_contract=100,  
                        blacklist=NULL, move_type="relocate", verbose=TRUE){
   N <- nrow(H_0)
@@ -1024,10 +1024,12 @@ sample_from_multiple_orders <- function(prec_list, space_banned_score_list,
 #             prec - current_order
 #             create_plus_sets - indicator for whether to return all valid rows
 #                                in the score table
-banned_parents_mapping <- function(map_pars, prec, create_plus_sets=FALSE){
+banned_parents_mapping <- function(map_pars, prec, create_plus_sets=FALSE,
+                                   create_minus_sets=FALSE){
   N <- length(map_pars$par_names)
   if(create_plus_sets){valid_parset_maps <- vector(mode="list", length=N)}
-  
+  if(create_minus_sets){minus_lookup_rows <- vector(mode="list", length=N)}
+  if(create_minus_sets){valid_parset_maps2 <- vector(mode="list", length=N)}
   banned_lookup_row <- vector(length=N)
   
   for(i in 1:N){
@@ -1043,7 +1045,28 @@ banned_parents_mapping <- function(map_pars, prec, create_plus_sets=FALSE){
     index_banned <- ifelse(length(banned_par_idx)==0 | is.na(banned_par_idx[1]),1,
                            map_pars$maps[[i]]$backwards[sum(2^banned_par_idx)/2+1])
     banned_lookup_row[i] <- index_banned
-    if(create_plus_sets){
+    if(create_minus_sets){
+      N_parents <- length(all_parents)
+      banned_row_minus <- vector(length=N_parents)
+      for(j in 1:N_parents){
+        if(j %in% banned_par_idx){
+          banned_par_idx2 <- banned_par_idx
+        }
+        else{
+          if(length(banned_par_idx)==0 | is.na(banned_par_idx[1])){
+            banned_par_idx2 <- j
+          }
+          else{
+            banned_par_idx2 <- sort(c(banned_par_idx, j))
+          }
+        }
+        index_banned2 <- ifelse(length(banned_par_idx2)==0 | is.na(banned_par_idx2[1]),1,
+                               map_pars$maps[[i]]$backwards[sum(2^banned_par_idx2)/2+1])
+        banned_row_minus[j] <- index_banned2
+      }
+      minus_lookup_rows[[i]] <- banned_row_minus
+    }
+    if(create_plus_sets | create_minus_sets){
       #finding which indices in the score table are valid per the order
       if(index_banned==1){
         allowed_rows<-c(1:nrow(map_pars$par_pset[[i]]))
@@ -1056,18 +1079,40 @@ banned_parents_mapping <- function(map_pars, prec, create_plus_sets=FALSE){
         else{
           allowed_rows <- c(2:tablesize[1])
           banned_pars <- map_pars$par_names[[i]][banned_par_idx]
-          #column-wise search for banned parents to eliminate rows
           for(j in 1:tablesize[2]){
             banned_rows <- which(map_pars$par_pset[[i]][allowed_rows, j] %in% banned_pars)
             if(length(banned_rows)>0){allowed_rows <- allowed_rows[-banned_rows]}
           }
           allowed_rows<-c(1,allowed_rows)
+          if(create_minus_sets){
+            ind_list <- vector(mode="list", length=tablesize[2])
+            
+            for(k in 1:tablesize[2]){
+              allowed_rows_k <- allowed_rows
+              banned_k <- map_pars$par_names[[i]][k]
+              for(j in 1:tablesize[2]){
+                banned_rows <- which(map_pars$par_pset[[i]][allowed_rows_k, j] == banned_k)
+                if(length(banned_rows)>0){allowed_rows_k <- allowed_rows_k[-banned_rows]}
+              }
+              ind_list[[k]]<-allowed_rows_k
+            }
+            if(create_minus_sets){
+              valid_parset_maps2[[i]] <- ind_list
+            }
+          }
+          #column-wise search for banned parents to eliminate rows
+          
         }
       }
-      
       valid_parset_maps[[i]] <- allowed_rows
     }
     
+  }
+  if(create_minus_sets){
+    if(create_plus_sets){
+      return(list("banned_row"=banned_lookup_row, "banned_minus_rows"=minus_lookup_rows, 
+                  "valid_pset_rows"=valid_parset_maps, "valid_mset_rows"=valid_parset_maps2))
+    }
   }
   if(create_plus_sets){
     return(list("banned_row"=banned_lookup_row, "valid_pset_rows"=valid_parset_maps))
@@ -1158,6 +1203,36 @@ sample_plus_graph <- function(score_plus_list, prec, map_pars,
   }
   return(G)
 }
+
+
+sample_minus_graph <- function(H, score_list, prec, map_pars,
+                               banned_map_pars, banned_score_list){
+  
+  N <- length(banned_score_list)
+  G <- H
+  
+  if(length(banned_map_pars$banned_minus_rows)==0){
+    banned_map_pars <- banned_parents_mapping(map_pars, prec, create_minus_sets=TRUE)
+  }
+
+  for(i in 1:N){
+    minus_scores <- banned_score_list[[i]][banned_map_pars$banned_minus_rows[[i]],1]
+    orig_score <- banned_score_list[[i]][banned_map_pars$banned_row[i],1]
+    tot_scores <- c(orig_score, minus_scores)
+    N_minus_sets <- length(tot_scores)
+    prob_vec <- as.numeric(exp(tot_scores - logSumExp(tot_scores)))
+    out_idx <- sample(1:N_minus_sets, size=1, prob=prob_vec)
+    
+    
+    par_names <- map_pars$par_names[[i]]
+    if(out_idx != 1){
+      G[i, par_names[out_idx-1]] <- 0
+    }
+  }
+  return(G)
+}
+
+
 
 #description: sampling step from M-H to choose between current order and the 
 #             proposal, via the banned parent table
@@ -1318,6 +1393,30 @@ shrink_search_space_v2 <- function(H_t, weight_matrix, set_size){
   return(list(H_new=H_new, updatenodes=update_nodes))
 }
 
+
+#description: expands the search space by adding any edges from a drawn set 
+#             of graphs that are not currently in the search space
+#parameters:  H - current search space
+#             Gs - set of graphs to keep in search space
+#             thresh - threshold for percentage of graphs that contain an edge 
+#                      in order to add it to the space
+shrink_search_space_v3 <- function(H, Gs, thresh=0.2){
+  
+  G_all <- matrix(0, nrow=nrow(H), ncol=ncol(H))
+  
+  for(i in 1:length(Gs)){
+    G_new <- BiDAG:::dagadj2cpadj(Gs[[i]])
+    G_all <- G_all + G_new
+  }
+  G_all <- (G_all/(length(Gs))>thresh)*1
+  H_new <- (G_all>=1)*1
+  
+  added_nodes <- H_new - H
+  update_nodes <- c(1:nrow(H))[rowSums(added_nodes)>0]
+  
+  return(list(H_new=H_new, updatenodes = update_nodes))
+}
+
 calculate_set_size <- function(G_t, n, p){
   q_est <- sum(G_t)*2/(p*(p-1))
   d_est <- max(rowSums(G_t))
@@ -1325,6 +1424,40 @@ calculate_set_size <- function(G_t, n, p){
   k_est <- ifelse(k_est > 0, k_est, 0)
   h <- 1/8*d_est*(n/log(p))^((1+k_est)/(2+k_est))*3*log(p)/log(2)
   return(floor(h))
+}
+
+
+calculate_birth_rate <- function(H, banned_plus_list, banned_map_pars){
+  
+  N <- length(banned_plus_list)
+  outside_matrix <- 1-H-diag(N)
+  update_matrix <- outside_matrix
+  for(i in 1:N){
+    N_plus_sets <- ncol(banned_plus_list[[i]])
+    tot_scores <- banned_plus_list[[i]][banned_map_pars$banned_row[i],]
+    B_e <- as.numeric(exp(tot_scores - tot_scores[1]))
+    B_e <- ifelse(B_e>1, 1, B_e)
+    update_matrix[i,as.numeric(which(outside_matrix[i,]==1))] <- B_e[-1]
+  }
+  return(update_matrix)
+}
+
+calculate_death_rate <- function(H, score_list, prec, map_pars, banned_map_pars,
+                                 banned_score_list){
+  if(length(banned_map_pars$banned_minus_rows)==0){
+    banned_map_pars <- banned_parents_mapping(map_pars, prec, create_minus_sets=TRUE)
+  }
+  
+  N <- nrow(H)
+  update_matrix <- H
+  for(i in 1:N){
+    tot_scores <- banned_score_list[[i]][banned_map_pars$banned_minus_rows[[i]],1]
+    orig_score <- banned_score_list[[i]][banned_map_pars$banned_row[i],1]
+    D_e <- as.numeric(exp(tot_scores - orig_score))
+    D_e <- ifelse(D_e>1, 1, D_e)
+    update_matrix[i, as.numeric(which(H[i,]==1))] <- D_e
+  }
+  return(update_matrix)
 }
 
 
