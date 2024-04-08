@@ -1351,8 +1351,9 @@ expand_search_space <- function(H, Gs, thresh=0.2){
   G_all <- matrix(0, nrow=nrow(H), ncol=ncol(H))
   
   for(i in 1:length(Gs)){
-    G_new <- BiDAG:::dagadj2cpadj(Gs[[i]])
-    G_all <- G_all + G_new
+    #G_new <- BiDAG:::dagadj2cpadj(Gs[[i]])
+    #G_all <- G_all + G_new
+    G_all <- G_all + Gs[[i]]
   }
   G_all <- (G_all/(length(Gs))>thresh)*1
   H_new <- (H + G_all>=1)*1
@@ -1405,14 +1406,13 @@ shrink_search_space_v3 <- function(H, Gs, thresh=0.2){
   G_all <- matrix(0, nrow=nrow(H), ncol=ncol(H))
   
   for(i in 1:length(Gs)){
-    G_new <- BiDAG:::dagadj2cpadj(Gs[[i]])
-    G_all <- G_all + G_new
+    G_all <- G_all + Gs[[i]]
   }
   G_all <- (G_all/(length(Gs))>thresh)*1
   H_new <- (G_all>=1)*1
   
-  added_nodes <- H_new - H
-  update_nodes <- c(1:nrow(H))[rowSums(added_nodes)>0]
+  removed_nodes <- H - H_new
+  update_nodes <- c(1:nrow(H))[rowSums(removed_nodes)>0]
   
   return(list(H_new=H_new, updatenodes = update_nodes))
 }
