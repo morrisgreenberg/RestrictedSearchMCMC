@@ -3,8 +3,9 @@
 Implementation of our Restricted Search MCMC methods for graph inference.
 
 ## Current (Potential) To-Dos:
-1. Add birth/death rate proposals and updates to MCMC sampler (currently wrote calculation functions, but haven't incorporated in full MCMC iteration yet)
-2. Architecture choices for birth/death processes
+1. Add FCM data generation for simulations
+2. Add function to assess score-equivalence between 2 graphs (for the purpose of comparing true graph vs. output). We may rely on the `bnlearn` package for this.
+3. Architecture choices for birth/death processes: could we do node-wise updates at adaptive steps?
 
 ## Completed Tasks:
 
@@ -15,3 +16,4 @@ Implementation of our Restricted Search MCMC methods for graph inference.
 - 2023-10-29: Updated the sampler proposal bouncing to correct form for full support kernels at each transition (by creating `sample_graph_random`, `implement_order_random`, `sample_from_2_graphs`, and updated all other functions to accommodate for these)
 - 2024-02-16: Updated contraction method to select edges based on maximal edge set size rather than user-inputted tolerance threshold
 - 2024-03-30: Added `calculate_birth_rate`, `calculate_death_rate`, `sample_minus_graph`, and updated `banned_parents_mapping` to allow for minus set output.
+- 2024-04-19: Updated `graph_mcmc` and `mcmc_sampler_step` to allow for the birth-death process updates.
