@@ -83,10 +83,10 @@ space_PC <- 1*as(pc_fit@graph, "matrix")
 #                           hardlimit = 16, softlimit = 10,
 #                           MAP = FALSE, posterior=0.2, alpha=0.4)
 
-mcmc_run <- graph_mcmc(space_PC, score_par_test, B=5000)
+mcmc_run <- graph_mcmc(space_PC, score_par_test, B=25000)
 
 
-Bs <- 5000
+Bs <- 25000
 dater <- mcmc_run
 
 total_size <- sapply(1:Bs, function(i){sum(t(dater$spaces[,,i]))})
@@ -182,6 +182,12 @@ index_post_burn <- ifelse(length(index_post_burn)>0, index_post_burn[1], floor(1
 
 mean_edge_est <- t(apply(dater$graphs[,,index_post_burn:Bs], c(1,2), mean))
 
+w_mean_edge_est <- t(apply(dater$graphs[,,index_post_burn:Bs], c(1,2), weighted.mean,
+                           w=dater$weight[index_post_burn:Bs]))
+
 library(pROC)
 plot(roc(as.numeric(trueDAGedges > 0),as.numeric(mean_edge_est)))
 auc(roc(as.numeric(trueDAGedges > 0),as.numeric(mean_edge_est)))
+
+plot(roc(as.numeric(trueDAGedges > 0),as.numeric(w_mean_edge_est)))
+auc(roc(as.numeric(trueDAGedges > 0),as.numeric(w_mean_edge_est)))

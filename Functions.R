@@ -1,5 +1,7 @@
 # Restricted Search Space MCMC sampler:
 
+# Restricted Search Space MCMC sampler:
+
 
 
 #description: wrapper function to perform the MCMC chain
@@ -33,9 +35,297 @@
 #                       shrinking/expanding occurs
 graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5, 
                        rho=1/1000, zeta=0.85, start_epsilon=0.1, 
-                       bounce=0.000000005, d=1, thresh=0.000000001, B=25000, 
+                       bounce=0.000000005, d_expand=1, d_shrink=1, 
+                       thresh=0.000000001, B=25000, 
                        start_contract=20, bound_contract=100,  
                        blacklist=NULL, move_type="relocate", verbose=TRUE){
+  N <- nrow(H_0)
+  prec_b <- 1:N
+  K_b <- round(sqrt(N/2))
+  G_b <- matrix(0, nrow=N, ncol=N)
+  H_b <- H_0
+  epsilon_b <- start_epsilon
+  mappings <- parents_mapping(H_0)
+  full_scores <- score_full_space(H_0, mappings,param, N)
+  banned_scores <- create_banned_parent_table(H_0, mappings,full_scores, N)
+  banned_mappings <- banned_parents_mapping(mappings, prec_b, TRUE)
+  plus_mappings <- plus_parents_mapping(H_0, 1, mappings, blacklist)
+  full_plus_scores <- score_plus_space(H_0, mappings, plus_mappings, param, N, 
+                                       has_scores_orig = TRUE, H_scores=full_scores)
+  banned_plus_scores <- create_banned_plus_parent_table(H_0, mappings, plus_mappings,
+                                                        full_plus_scores$full_list)
+  Gs <- array(dim=c(N, N, B))
+  precs <- matrix(nrow=B, ncol=N)
+  Hs <- array(dim=c(N, N, B))
+  Ks <- numeric(B)
+  selected <- matrix(0, nrow=N, ncol=N)
+  considered <- matrix(0, nrow=N, ncol=N)
+  weights_matr <- array(dim=c(N, N, B))
+  weight_vec <- numeric(B)
+  
+  for(b in 1:B){
+    if(verbose){
+      if(b %% 1 == 0){
+        print(paste("b: ", b))
+      }
+    }
+    sampler_step <- mcmc_sampler_step(prec_b, G_b, H_b, K_b, epsilon_b, 
+                                      alpha, beta, selected, considered, 
+                                      b, d_expand, d_shrink, banned_scores, 
+                                      mappings, banned_mappings, plus_mappings, 
+                                      full_scores, banned_plus_scores, 
+                                      full_plus_scores, param, lambda, rho, 
+                                      bounce, thresh, start_contract, move_type,
+                                      bound_contract, blacklist, verbose)
+    
+    G_b <- sampler_step$G_t_plus1
+    Gs[,,b] <- G_b
+    H_b <- sampler_step$H_t_plus1
+    Hs[,,b] <- H_b
+    prec_b <- sampler_step$prec_t_plus1
+    precs[b,] <- prec_b
+    selected <- sampler_step$s
+    considered <- sampler_step$c
+    K_b <- sampler_step$K_t_plus1
+    Ks[b] <- K_b
+    banned_scores <- sampler_step$banned_scores
+    full_scores <- sampler_step$order_scores
+    mappings <- sampler_step$par_mappings
+    banned_plus_scores <- sampler_step$banned_plus_scores
+    full_plus_scores <- sampler_step$order_plus_scores
+    plus_mappings <- sampler_step$plus_par_mappings
+    banned_mappings <- sampler_step$banned_par_mappings
+    weights_matr[,,b] <- sampler_step$weights
+    epsilon_b <- start_epsilon/(b^zeta)
+    weight_vec[b] <- sampler_step$weight
+  }
+  return(list(orders=precs, graphs=Gs, spaces=Hs, sparsity=Ks,
+              weights=weights_matr, weight = weight_vec))
+}
+
+#description: 1 step of the MCMC sampler
+#parameters:  prec_t - order at step t
+#             G_t - graph at step t
+#             H_t - search space at step t
+#             K_t - sparsity at step t (currently on hold)
+#             e_t - shrinkage threshold at step t
+#             alpha - numerator prior on shrinkage weights
+#             beta - denominator prior on shrinkage weights
+#             selected - vector of num times each edge was selected in 1:t
+#             considered - vector of num times each edge was considered in 1:t
+#             t - step number in the chain
+#             d - number of graphs to draw at expansion
+#             space_banned_score_list - banned score list for scoring orders
+#             map_pars - hash tables for order scoring
+#             full_score_list - score lists for every valid parent set
+#             param - score parameter object, constructed from package BiDAG
+#             lamb - parameter for a Poisson sparsity prior (currently on hold)
+#             rho - exponent in shrinkage weights, between 0 and 1 
+#                   (larger weight means quicker to approach a denominator of
+#                    num of total steps instead of num of considered steps)
+#             bounce - probability we bounce to a random graph in the space in the proposal
+#             thresh - threshold to add edges to the space from the d samples
+#             start_contract - step in the chain where contraction begins
+#             move_probs - how to propose move types. Three current methods:
+#                          a. relocate - always performs node relocation
+#                          b. random - node relocation (NR) 1/3 of the time,
+#                                     local transposition (LT) 1/3,
+#                                     global swap (GS) 1/3
+#                         c. Kuipers - NR 6/(t+7), LT t/(t+7), GS 1/(t+7)
+#             bound_contract - bound of minimal number of steps an edge
+#                              needs to be considered before removing it
+#             verbose - prints the step in the chain number if TRUE, and when
+#                       shrinking/expanding occurs
+mcmc_sampler_step <- function(prec_t, G_t, H_t, K_t, e_t, alpha, beta, 
+                              selected, considered, t, d_expand, 
+                              d_shrink, space_banned_score_list, 
+                              map_pars, banned_pars, plus_pars,
+                              full_score_list, plus_banned_list, 
+                              plus_score_list, param, lamb, rho, bounce,
+                              thresh, start_contract, move_probs, 
+                              bound_contract, blacklist, verbose){
+  N <- nrow(H_t)
+  l <- 1
+  #sampling whether we do any expansion/contraction steps
+  birth_rates <- calculate_birth_rate(H_t, plus_banned_list, banned_pars)
+  death_rates <- calculate_death_rate(H_t, full_score_list, prec_t, map_pars,
+                                      banned_pars, space_banned_score_list)
+  w_t <- 1/(sum(birth_rates)+sum(death_rates))
+  is_adaption <- sample(c(T, F), size=1, prob=c(1/sqrt(t), 1-1/sqrt(t)))
+  is_contraction <- F
+  is_expansion <- F
+  if(is_adaption){
+    process <- sample(c("Birth", "Death"), size=1, prob=c(sum(birth_rates)*w_t, sum(death_rates)*w_t)) 
+    if(process=="Birth"){
+      is_expansion <- T
+    }
+    else{
+      is_contraction <- T
+    }
+  }
+  
+  #sampling move type
+  if(move_probs=="Kuipers"){
+    move_type <- sample(c("global swap", "local transposition", "node relocation"), size=1,
+                        prob=c(1/(t+7), t/(t+7), 6/(t+7)))
+  }
+  else if(move_probs=="relocate"){
+    move_type <- "node relocation"
+  }
+  else{
+    move_type <- sample(c("global swap", "local transposition", "node relocation"), size=1,
+                        prob=c(1/3, 1/3, 1/3))
+  }
+  if(verbose){print(move_type)}
+  if(is_adaption){
+    if(is_expansion){
+      G_set <- vector(mode="list", length=d_expand)
+      #create a set of extra graphs to permanently add to the space
+      for(i in 1:d_expand){
+        temp <- sample_plus_graph(plus_score_list$full_list, prec_t, map_pars,
+                                  plus_banned_list, banned_pars, plus_pars)
+        G_set[[i]] <- temp
+      }
+      if(verbose){print("pre-expand")}
+      space_output <- expand_search_space(H_t, G_set, thresh)
+      H_t_plus1 <- space_output$H_new
+      update_nodes <- space_output$updatenodes
+      if(verbose){print("post-expand")}
+    }
+    else{
+      G_set <- vector(mode="list", length=d_shrink)
+      #create a set of extra graphs to permanently add to the space
+      for(i in 1:d_shrink){
+        temp <- sample_minus_graph(H_t, full_score_list, prec_t, map_pars,
+                                   banned_pars, space_banned_score_list)
+        G_set[[i]] <- temp
+      }
+      if(verbose){print("pre-shrink")}
+      space_output <- shrink_search_space_v3(H_t, G_set, thresh)
+      H_t_plus1 <- space_output$H_new
+      update_nodes <- space_output$updatenodes
+      if(verbose){print("post-shrink")}
+    }
+    
+    new_mappings <- parents_mapping(H_t_plus1, N, update_nodes,
+                                    TRUE, map_pars)
+    new_full_scores <- score_full_space(H_t_plus1, new_mappings,
+                                        param, N, update_nodes, 
+                                        TRUE, full_score_list)
+    
+    new_banned_scores <- 
+      create_banned_parent_table(H_t_plus1, new_mappings, new_full_scores, 
+                                 N,update_nodes, TRUE,
+                                 space_banned_score_list)
+    new_plus_mappings <- plus_parents_mapping(H_t_plus1, l, new_mappings, blacklist)
+    new_plus_scores <- score_plus_space(H_t_plus1, new_mappings, new_plus_mappings, 
+                                        param, N, update_nodes, TRUE, new_full_scores,
+                                        TRUE, plus_score_list)
+    new_banned_plus_scores <- create_banned_plus_parent_table(H_t_plus1, new_mappings,
+                                                              new_plus_mappings, 
+                                                              new_plus_scores$full_list,
+                                                              N, update_nodes, TRUE,
+                                                              plus_banned_list)
+    #considering the current space, and create new space scores for expansion
+    # K_Ht <- max(rowSums(H_t))
+    # l <- K_t - K_Ht
+    # l <- 1
+    # plus_pars <- plus_parents_mapping(H_t, l, map_pars)
+    #sample new order
+    prec_prime <- implement_order_v2(prec_t, move_type,
+                                     new_banned_scores, new_mappings)
+    prec_t_plus1 <- sample_from_2_orders(prec_t, prec_prime, 
+                                         new_banned_scores, new_mappings)
+    banned_pars <- banned_parents_mapping(new_mappings, prec_t_plus1, TRUE)
+    graph_t_plus1 <- sample_graph(new_full_scores, prec_t_plus1, new_mappings, 
+                                  banned_pars)
+    
+    
+    
+  }
+  
+  else{
+    #standard sampling of an order
+    prec_prime <- implement_order_v2(prec_t, move_type, 
+                                     space_banned_score_list, map_pars)
+    prec_t_plus1 <- sample_from_2_orders(prec_t, prec_prime, 
+                                         space_banned_score_list, map_pars)
+    banned_pars <- banned_parents_mapping(map_pars, prec_t_plus1, TRUE)
+    
+    #standard inventory of current search space sparsity
+    # K_Ht <- max(rowSums(H_t))
+    # l <- K_t - K_Ht
+    
+    #standard sampling of graph
+    graph_t_plus1 <- sample_graph(full_score_list, prec_t_plus1, map_pars, banned_pars)
+    
+    #standard update of the search space
+    H_t_plus1 <- H_t
+    new_full_scores <- full_score_list
+    new_banned_scores <- space_banned_score_list
+    new_mappings <- map_pars
+    new_plus_mappings <- plus_pars
+    new_plus_scores <- plus_score_list
+    new_banned_plus_scores <- plus_banned_list
+  }
+  
+  weights_list <- create_weights(selected, considered, H_t, graph_t_plus1, t,
+                                 bound_contract, alpha, beta, 
+                                 rho)
+  selected_new <- weights_list$selected_new
+  considered_new <- weights_list$considered_new
+  weights_new <- weights_list$weights_new
+  K_t_plus1 <- K_t
+  
+  return(list(prec_t_plus1=prec_t_plus1, G_t_plus1=graph_t_plus1, 
+              H_t_plus1=H_t_plus1, K_t_plus1=K_t_plus1, 
+              s=selected_new, c=considered_new,
+              order_scores = new_full_scores, 
+              banned_scores = new_banned_scores,
+              par_mappings = new_mappings,
+              order_plus_scores = new_plus_scores,
+              banned_plus_scores = new_banned_plus_scores,
+              banned_par_mappings = banned_pars,
+              plus_par_mappings = new_plus_mappings,
+              weights = weights_new,
+              weight = w_t))
+  
+}
+
+#description: wrapper function to perform the MCMC chain
+#parameters:  H_0 - starting search space
+#             param - scoring parameter object, constructed from package BiDAG
+#             alpha - numerator prior on the shrinkage weights
+#             beta - denominator prior on the shrinkage weights
+#             lambda - parameter for a Poisson sparsity prior 
+#                      (currently on hold)
+#             rho - exponent in shrinkage weights, between 0 and 1 
+#                   (larger weight means quicker to approach a denominator of
+#                    num of total steps instead of num of considered steps)
+#             zeta - exponent for tolerance threshold, between 0 and 1
+#                    (weight of 1 causes inv-linear decay, less is inv-sublinear)
+#             start_epsilon - tolerance at step 1 of the chain
+#             bounce - probability we bounce to a random graph in the space in the proposal
+#             d - number of graphs to sample at expansion steps
+#             thresh - threshold to add edges to the space from the d samples
+#             B - number of steps of the chain
+#             start_contract - step in the chain where contraction begins
+#             bound_contract - bound of minimal number of steps an edge
+#                              needs to be considered before removing it
+#             blacklist - list of any parent structures that are not allowed
+#             move_type - how to propose move types. Three current methods:
+#                         a. relocate - always performs node relocation
+#                         b. random - node relocation (NR) 1/3 of the time,
+#                                     local transposition (LT) 1/3,
+#                                     global swap (GS) 1/3
+#                         c. Kuipers - NR 6/(t+7), LT t/(t+7), GS 1/(t+7)
+#             verbose - prints the step in the chain number if TRUE, and when
+#                       shrinking/expanding occurs
+graph_mcmc_old <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5, 
+                           rho=1/1000, zeta=0.85, start_epsilon=0.1, 
+                           bounce=0.000000005, d=1, thresh=0.000000001, B=25000, 
+                           start_contract=20, bound_contract=100,  
+                           blacklist=NULL, move_type="relocate", verbose=TRUE){
   N <- nrow(H_0)
   prec_b <- 1:N
   K_b <- round(sqrt(N/2))
@@ -130,14 +420,14 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
 #                              needs to be considered before removing it
 #             verbose - prints the step in the chain number if TRUE, and when
 #                       shrinking/expanding occurs
-mcmc_sampler_step <- function(prec_t, G_t, H_t, K_t, e_t, alpha, beta, 
-                              selected, considered, t, d, 
-                              space_banned_score_list, map_pars,
-                              full_score_list, plus_banned_list, 
-                              plus_pars, plus_score_list,
-                              param, lamb, rho, bounce,
-                              thresh, start_contract, move_probs, 
-                              bound_contract, blacklist, verbose){
+mcmc_sampler_step_old <- function(prec_t, G_t, H_t, K_t, e_t, alpha, beta, 
+                                  selected, considered, t, d, 
+                                  space_banned_score_list, map_pars,
+                                  full_score_list, plus_banned_list, 
+                                  plus_pars, plus_score_list,
+                                  param, lamb, rho, bounce,
+                                  thresh, start_contract, move_probs, 
+                                  bound_contract, blacklist, verbose){
   N <- nrow(H_t)
   l <- 1
   #sampling whether we do any expansion/contraction steps
@@ -1104,7 +1394,9 @@ banned_parents_mapping <- function(map_pars, prec, create_plus_sets=FALSE,
           
         }
       }
-      valid_parset_maps[[i]] <- allowed_rows
+      if(create_plus_sets){
+        valid_parset_maps[[i]] <- allowed_rows
+      }
     }
     
   }
@@ -1113,6 +1405,8 @@ banned_parents_mapping <- function(map_pars, prec, create_plus_sets=FALSE,
       return(list("banned_row"=banned_lookup_row, "banned_minus_rows"=minus_lookup_rows, 
                   "valid_pset_rows"=valid_parset_maps, "valid_mset_rows"=valid_parset_maps2))
     }
+    return(list("banned_row"=banned_lookup_row, "banned_minus_rows"=minus_lookup_rows,
+           "valid_mset_rows"=valid_parset_maps2))
   }
   if(create_plus_sets){
     return(list("banned_row"=banned_lookup_row, "valid_pset_rows"=valid_parset_maps))
@@ -1218,7 +1512,12 @@ sample_minus_graph <- function(H, score_list, prec, map_pars,
   for(i in 1:N){
     minus_scores <- banned_score_list[[i]][banned_map_pars$banned_minus_rows[[i]],1]
     orig_score <- banned_score_list[[i]][banned_map_pars$banned_row[i],1]
-    tot_scores <- c(orig_score, minus_scores)
+    if(sum(is.na(minus_scores))>0){
+      tot_scores <- orig_score
+    }
+    else{
+      tot_scores <- c(orig_score, minus_scores)
+    }
     N_minus_sets <- length(tot_scores)
     prob_vec <- as.numeric(exp(tot_scores - logSumExp(tot_scores)))
     out_idx <- sample(1:N_minus_sets, size=1, prob=prob_vec)
