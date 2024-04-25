@@ -55,6 +55,7 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
   banned_plus_scores <- create_banned_plus_parent_table(H_0, mappings, plus_mappings,
                                                         full_plus_scores$full_list)
   Gs <- array(dim=c(N, N, B))
+  skels <- array(dim=c(N, N, B))
   precs <- matrix(nrow=B, ncol=N)
   Hs <- array(dim=c(N, N, B))
   Ks <- numeric(B)
@@ -80,6 +81,7 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
     
     G_b <- sampler_step$G_t_plus1
     Gs[,,b] <- G_b
+    skels[,,b] <- (G_b + t(G_b)>0)*1
     H_b <- sampler_step$H_t_plus1
     Hs[,,b] <- H_b
     prec_b <- sampler_step$prec_t_plus1
@@ -99,8 +101,8 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
     epsilon_b <- start_epsilon/(b^zeta)
     weight_vec[b] <- sampler_step$weight
   }
-  return(list(orders=precs, graphs=Gs, spaces=Hs, sparsity=Ks,
-              weights=weights_matr, weight = weight_vec))
+  return(list(orders=precs, graphs=Gs, skeletons=skels, spaces=Hs, 
+              sparsity=Ks, weights=weights_matr, weight = weight_vec))
 }
 
 #description: 1 step of the MCMC sampler
@@ -1798,4 +1800,14 @@ index_finder_plus <- function(plus_amt, max_pwr){
     }
   }
   return(index_list)
+}
+
+are_equivalent <- function(g1, g2){
+  if(sum(g1) != sum(g2)){
+    return(FALSE)
+  }
+  cp1 <- BiDAG:::dagadj2cpadj(g1)
+  cp2 <- BiDAG:::dagadj2cpadj(g2)
+  compare <- abs(cp1 - cp2)
+  return(max(compare)==0)
 }

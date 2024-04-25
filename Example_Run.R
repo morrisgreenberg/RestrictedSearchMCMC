@@ -180,14 +180,17 @@ index_post_burn <- which(full_sim_data$`True Positive Edges`==sum(trueDAGedges>0
 
 index_post_burn <- ifelse(length(index_post_burn)>0, index_post_burn[1], floor(1/3*Bs))
 
-mean_edge_est <- t(apply(dater$graphs[,,index_post_burn:Bs], c(1,2), mean))
+mean_edge_est <- t(apply(dater$skeletons[,,index_post_burn:Bs], c(1,2), mean))
 
-w_mean_edge_est <- t(apply(dater$graphs[,,index_post_burn:Bs], c(1,2), weighted.mean,
+w_mean_edge_est <- t(apply(dater$skeletons[,,index_post_burn:Bs], c(1,2), weighted.mean,
                            w=dater$weight[index_post_burn:Bs]))
 
-library(pROC)
-plot(roc(as.numeric(trueDAGedges > 0),as.numeric(mean_edge_est)))
-auc(roc(as.numeric(trueDAGedges > 0),as.numeric(mean_edge_est)))
+trueDAG_skel <- (trueDAG + t(trueDAG) > 0)*1
+trueDAG_skel_lower <- trueDAG_skel[lower.tri(trueDAG_skel)]
 
-plot(roc(as.numeric(trueDAGedges > 0),as.numeric(w_mean_edge_est)))
-auc(roc(as.numeric(trueDAGedges > 0),as.numeric(w_mean_edge_est)))
+library(pROC)
+plot(roc(trueDAG_skel_lower,mean_edge_est[lower.tri(mean_edge_est)]))
+auc(roc(trueDAG_skel_lower,mean_edge_est[lower.tri(mean_edge_est)]))
+
+plot(roc(trueDAG_skel_lower,w_mean_edge_est[lower.tri(w_mean_edge_est)]))
+auc(roc(trueDAG_skel_lower,w_mean_edge_est[lower.tri(w_mean_edge_est)]))

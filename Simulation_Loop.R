@@ -82,15 +82,42 @@ rmvlogDAG <- function(trueDAGedges, N, standardise = TRUE) {
 }
 
 
+rmvlogexpDAG <- function(trueDAGedges, N, standardise = TRUE) {
+  trueDAG <- 1*(trueDAGedges != 0) # the edge presence in the DAG
+  n <- ncol(trueDAG) # number of variables
+  data <- matrix(0, nrow = N, ncol = n) # to store the simulated data
+  top_order <- rev(BiDAG:::DAGtopartition(n, trueDAG)$permy) # go down order
+  for (jj in top_order) {
+    parents <- which(trueDAG[, jj] == 1) # find parents
+    lp <- length(parents) # number of parents
+    if (lp == 0) { # no parents
+      data[, jj] <- 0
+    } else if (lp == 1) { # one parent
+      data[, jj] <- log(data[, parents]*trueDAGedges[parents, jj])
+    } else { # more than one parent
+      data[, jj] <- log(colSums(t(data[, parents])*trueDAGedges[parents, jj]))
+    }
+    # add random noise
+    data[, jj] <- data[, jj] + rnorm(N)
+  }
+  data <- exp(data)
+  if(standardise) { # whether to standardise
+    scale(data)
+  } else {
+    data
+  }
+}
 
-seeds <- 101:200
-replicates <- 10
+
+
+seeds <- 101:150
+replicates <- 1:5
 pc_alg_thresh <- c(0.05, 0.5, 0.95)
 graph_model <- c("ERs", "iER")
 nodes <- c(20, 200)
 dataset_multiplier <- c(2, 10)
-data_model <- c("Gaussian", "Log_Gaussian")
-Bs <- 10000
+data_model <- c("Gaussian", "Log_Gaussian", "LogExp_Gaussian")
+Bs <- 20000
 
 
 cl <- makeCluster(detectCores()-1, 'PSOCK')
@@ -109,7 +136,7 @@ clusterExport(cl, varlist=c("graph_mcmc", "rmvDAG","create_weights",
                             "implement_order_random", "sample_graph_random",
                             "sample_minus_graph", "sample_from_2_graphs",
                             "rmvlogDAG", "shrink_search_space", "calculate_birth_rate",
-                            "calculate_death_rate"),
+                            "calculate_death_rate", "rmvlogexpDAG", "are_equivalent"),
               envir = .GlobalEnv)
 
 
@@ -132,8 +159,12 @@ op <- foreach(method=graph_model, .errorhandling='pass', .combine='rbind') %:%
           foreach(i=seeds, .combine='rbind') %:%
             foreach(k=replicates, .combine='rbind') %dopar% {
               N <- m*n
-              file_name1 <- paste0("_method_", method, "_n_", n, "_N_", N, "_seed_", i, 
-                                   "_pcthresh_", thresh, "_data_model_", datatype, "_sim.Rdata")
+              file_name1 <- paste0("_method_", method, "_n_", n, "_N_", N, 
+                                   "_seed_", i, "_pcthresh_", thresh, "_data_model_", 
+                                   datatype, "_rep_", k, "_sim.Rdata")
+              file_name2 <- paste0("_method_", method, "_n_", n, "_N_", N, 
+                                   "_seed_", i, "_pcthresh_", thresh, "_data_model_", 
+                                   datatype, "_rep_", k, "_summary.Rdata")
               set.seed(i)
               if(method=="ERs"){
                 trueDAGedges <- as(pcalg::randDAG(n = n, d = 4, 
@@ -149,8 +180,11 @@ op <- foreach(method=graph_model, .errorhandling='pass', .combine='rbind') %:%
               if(datatype=="Gaussian"){
                 data <- rmvDAG(trueDAGedges, N, standardise = FALSE)
               }
-              else{
+              else if(datatype=="Log_Gaussian"){
                 data <- rmvlogDAG(trueDAGedges, N, standardise = FALSE)
+              }
+              else{
+                data <- rmvlogexpDAG(trueDAGedges, N, standardise = FALSE)
               }
               
               score_par_sim <- scoreparameters("bge", data)
@@ -164,18 +198,24 @@ op <- foreach(method=graph_model, .errorhandling='pass', .combine='rbind') %:%
               space_PC <- 1*as(pc_fit@graph, "matrix")
               
               results <- graph_mcmc(space_PC, score_par_sim, B=Bs, 
-                                    verbose=FALSE, bounce = 0.000000001)
-              save(results, file=paste("./Output/Simulation_3", file_name1, sep="/"))
+                                    verbose=FALSE)
+              save(results, file=paste("./Output/Simulation_4", file_name1, sep="/"))
               
               
               
-              levels <- c(0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99)
-              output_full <- vector(mode="numeric", length=4*length(levels))
-              for(ls in 1:length(levels)){
-                mean_edge_est <- t(apply(results$graphs[,,1000:5000], c(1,2), mean))
-                graph_est <- 1*(mean_edge_est>levels[ls])
-                output <- as.numeric(table(graph_est, trueDAG))
-                output_full[(ls-1)*4+1:ls*4] <- output
-              }
+              # levels <- c(0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99)
+              # output_full <- vector(mode="numeric", length=4*length(levels))
+              burn_in <- ceil(0.1*Bs)
+              trueDAG_skel <- (trueDAG + t(trueDAG) > 0)*1
+              trueDAG_skel_lower <- trueDAG_skel[lower.tri(trueDAG_skel)]
+              mean_edge_est <- t(apply(results$skeletons[,,burn_in:Bs], c(1,2), mean))
+              w_mean_edge_est <- t(apply(results$skeletons[,,burn_in:Bs], c(1,2), weighted.mean,
+                                         w=results$weight[burn_in:Bs]))
+              auc_orig <- auc(roc(trueDAG_skel_lower,mean_edge_est[lower.tri(mean_edge_est)]))
+              auc_weighted <- auc(roc(trueDAG_skel_lower,w_mean_edge_est[lower.tri(w_mean_edge_est)]))
+              pct_equiv <- sum(sapply(burn_in:Bs, function(i){
+                are_equivalent(trueDAG, t(results$graphs[,,i]))}))/(Bs-burn_in+1)
+              output_full <- c(auc_orig, auc_weighted, pct_equiv)
+              save(output_full, file=paste("./Output/Simulation_4", file_name2, sep="/"))
               output_full
             }
