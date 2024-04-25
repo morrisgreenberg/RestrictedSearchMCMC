@@ -17,3 +17,4 @@ Implementation of our Restricted Search MCMC methods for graph inference.
 - 2024-02-16: Updated contraction method to select edges based on maximal edge set size rather than user-inputted tolerance threshold
 - 2024-03-30: Added `calculate_birth_rate`, `calculate_death_rate`, `sample_minus_graph`, and updated `banned_parents_mapping` to allow for minus set output.
 - 2024-04-19: Updated `graph_mcmc` and `mcmc_sampler_step` to allow for the birth-death process updates.
+- 2024-04-25: Added `rmvlogDAG` and `rmvlogexpDAG` for adding FMC data generation models, updated looping to account for equivalence.
