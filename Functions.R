@@ -36,7 +36,7 @@
 graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5, 
                        rho=1/1000, zeta=0.85, start_epsilon=0.1, 
                        bounce=0.000000005, d_expand=1, d_shrink=1, 
-                       thresh=0.000000001, B=25000, 
+                       thresh=0.000000001, B=25000, warm_up=NULL,
                        start_contract=20, bound_contract=100,  
                        blacklist=NULL, move_type="relocate", verbose=TRUE){
   N <- nrow(H_0)
@@ -64,6 +64,10 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
   weights_matr <- array(dim=c(N, N, B))
   weight_vec <- numeric(B)
   
+  if(is.null(warm_up)){
+    warm_up <- 10*N
+  }
+  
   for(b in 1:B){
     if(verbose){
       if(b %% 1 == 0){
@@ -77,7 +81,7 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
                                       full_scores, banned_plus_scores, 
                                       full_plus_scores, param, lambda, rho, 
                                       bounce, thresh, start_contract, move_type,
-                                      bound_contract, blacklist, verbose)
+                                      warm_up, bound_contract, blacklist, verbose)
     
     G_b <- sampler_step$G_t_plus1
     Gs[,,b] <- G_b
@@ -144,7 +148,7 @@ mcmc_sampler_step <- function(prec_t, G_t, H_t, K_t, e_t, alpha, beta,
                               map_pars, banned_pars, plus_pars,
                               full_score_list, plus_banned_list, 
                               plus_score_list, param, lamb, rho, bounce,
-                              thresh, start_contract, move_probs, 
+                              thresh, start_contract, move_probs, warm_up,
                               bound_contract, blacklist, verbose){
   N <- nrow(H_t)
   l <- 1
@@ -153,7 +157,8 @@ mcmc_sampler_step <- function(prec_t, G_t, H_t, K_t, e_t, alpha, beta,
   death_rates <- calculate_death_rate(H_t, full_score_list, prec_t, map_pars,
                                       banned_pars, space_banned_score_list)
   w_t <- 1/(sum(birth_rates)+sum(death_rates))
-  is_adaption <- sample(c(T, F), size=1, prob=c(1/sqrt(t), 1-1/sqrt(t)))
+  is_adaption <- ifelse(t > warm_up, 
+                        sample(c(T, F), size=1, prob=c(1/sqrt(t-warm_up), 1-1/sqrt(t-warm_up))), F)
   is_contraction <- F
   is_expansion <- F
   if(is_adaption){
