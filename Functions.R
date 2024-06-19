@@ -705,6 +705,39 @@ create_banned_parent_table <- function(H, map_pars, score_list,
                                        N=ncol(H), updatenodes=1:N,
                                        has_scores_orig=FALSE, 
                                        old_scores=NULL){
+  orderscore<-vector(mode="list", length=N)
+  for(i in 1:N){
+    if(!(i %in% updatenodes) & has_scores_orig){
+      orderscore[[i]] <- old_scores[[i]]
+    }
+    else{
+      zeta_vec <- score_list[[i]][,1]
+      N_pars <- length(map_pars$par_names[[i]])
+      if(N_pars > 0){
+        for(t in 1:N_pars){
+          index_t <- numeric(0)
+          for(colsy in 1:N_pars){
+            index_t <- c(index_t, which(t==map_pars$idx_pset[[i]][,colsy]))
+          }
+          for(rowsy in index_t){
+            mapped_val <- map_pars$maps[[i]]$forward[rowsy]-2^(t-1)
+            min_rowsy <- map_pars$maps[[i]]$backwards[mapped_val]
+            zeta_vec[rowsy] <- logSumExp(c(zeta_vec[rowsy], zeta_vec[min_rowsy]))
+          }
+          
+        }
+      }
+      orderscore[[i]] <- as.matrix(rev(zeta_vec))
+    }
+    
+  }
+  return(orderscore)
+}
+
+create_banned_parent_table_old <- function(H, map_pars, score_list, 
+                                       N=ncol(H), updatenodes=1:N,
+                                       has_scores_orig=FALSE, 
+                                       old_scores=NULL){
   poset_pt<-list(length=N)
   for(i in updatenodes){
     Ni_rows <- nrow(map_pars$idx_pset[[i]])
