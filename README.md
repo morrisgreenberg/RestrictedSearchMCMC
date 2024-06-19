@@ -19,3 +19,4 @@ Implementation of our Restricted Search MCMC methods for graph inference.
 - 2024-04-19: Updated `graph_mcmc` and `mcmc_sampler_step` to allow for the birth-death process updates.
 - 2024-04-25: Added `rmvlogDAG` and `rmvlogexpDAG` for adding FMC data generation models, updated looping to account for equivalence.
 - 2024-06-16: Added `g2Q` to turn stochastic block model output from the `igraph` package (using `sample_sbm`) DAGs. Pushed code with warm-up of 10*n built in.
+- 2024-06-17: Updated `create_banned_parent_table` to use the fast zeta transform method explained in Viinikka et al. "Towards Scalable Bayesian Learning of Causal DAGs" (NeurIPS 2020).
