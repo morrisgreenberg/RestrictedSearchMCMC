@@ -5,7 +5,6 @@ Implementation of our Restricted Search MCMC methods for graph inference.
 ## Current (Potential) To-Dos:
 1. Add FCM data generation for simulations
 2. Add function to assess score-equivalence between 2 graphs (for the purpose of comparing true graph vs. output). We may rely on the `bnlearn` package for this.
-3. Architecture choices for birth/death processes: could we do node-wise updates at adaptive steps?
 
 ## Completed Tasks:
 
@@ -20,3 +19,4 @@ Implementation of our Restricted Search MCMC methods for graph inference.
 - 2024-04-25: Added `rmvlogDAG` and `rmvlogexpDAG` for adding FMC data generation models, updated looping to account for equivalence.
 - 2024-06-16: Added `g2Q` to turn stochastic block model output from the `igraph` package (using `sample_sbm`) DAGs. Pushed code with warm-up of 10*n built in.
 - 2024-06-17: Updated `create_banned_parent_table` to use the fast zeta transform method explained in Viinikka et al. "Towards Scalable Bayesian Learning of Causal DAGs" (NeurIPS 2020).
+- 2024-07-10: Completed coding overhaul to make plus scoring and banned tables more efficient, via new functions `score_plus_space_new`, `create_banned_plus_parent_table_new`, `logMinusExp`, and `bge_score_plus_parent`.
