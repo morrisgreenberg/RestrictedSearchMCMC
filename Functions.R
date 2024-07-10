@@ -37,7 +37,7 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
                        rho=1/1000, zeta=0.85, start_epsilon=0.1, 
                        bounce=0.000000005, d_expand=1, d_shrink=1, 
                        thresh=0.000000001, B=25000, warm_up=NULL,
-                       start_contract=20, bound_contract=100,  
+                       start_contract=20, bound_contract=100, max_sparsity=18, 
                        blacklist=NULL, move_type="relocate", verbose=TRUE){
   N <- nrow(H_0)
   prec_b <- 1:N
@@ -46,14 +46,18 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
   H_b <- H_0
   epsilon_b <- start_epsilon
   mappings <- parents_mapping(H_0)
-  full_scores <- score_full_space(H_0, mappings,param, N)
-  banned_scores <- create_banned_parent_table(H_0, mappings,full_scores, N)
   banned_mappings <- banned_parents_mapping(mappings, prec_b, TRUE)
   plus_mappings <- plus_parents_mapping(H_0, 1, mappings, blacklist)
-  full_plus_scores <- score_plus_space(H_0, mappings, plus_mappings, param, N, 
-                                       has_scores_orig = TRUE, H_scores=full_scores)
-  banned_plus_scores <- create_banned_plus_parent_table(H_0, mappings, plus_mappings,
-                                                        full_plus_scores$full_list)
+  score_object <- score_plus_space_new(H_0, mappings, plus_mappings, param, N)
+  banned_object <- create_banned_plus_parent_table_new(H_0, mappings, plus_mappings,
+                                                       score_object$full_list)
+  
+  full_scores <- score_object$curr_scores
+  banned_scores <- banned_object$curr_scores
+  
+  full_plus_scores <- score_object$full_list
+  banned_plus_scores <- banned_object$plus_scores
+  
   Gs <- array(dim=c(N, N, B))
   skels <- array(dim=c(N, N, B))
   precs <- matrix(nrow=B, ncol=N)
@@ -81,7 +85,8 @@ graph_mcmc <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5,
                                       full_scores, banned_plus_scores, 
                                       full_plus_scores, param, lambda, rho, 
                                       bounce, thresh, start_contract, move_type,
-                                      warm_up, bound_contract, blacklist, verbose)
+                                      warm_up, bound_contract, max_sparsity,
+                                      blacklist, verbose)
     
     G_b <- sampler_step$G_t_plus1
     Gs[,,b] <- G_b
@@ -149,7 +154,7 @@ mcmc_sampler_step <- function(prec_t, G_t, H_t, K_t, e_t, alpha, beta,
                               full_score_list, plus_banned_list, 
                               plus_score_list, param, lamb, rho, bounce,
                               thresh, start_contract, move_probs, warm_up,
-                              bound_contract, blacklist, verbose){
+                              bound_contract, max_sparsity, blacklist, verbose){
   N <- nrow(H_t)
   l <- 1
   #sampling whether we do any expansion/contraction steps
@@ -189,12 +194,12 @@ mcmc_sampler_step <- function(prec_t, G_t, H_t, K_t, e_t, alpha, beta,
       G_set <- vector(mode="list", length=d_expand)
       #create a set of extra graphs to permanently add to the space
       for(i in 1:d_expand){
-        temp <- sample_plus_graph(plus_score_list$full_list, prec_t, map_pars,
+        temp <- sample_plus_graph(plus_score_list, prec_t, map_pars,
                                   plus_banned_list, banned_pars, plus_pars)
         G_set[[i]] <- temp
       }
       if(verbose){print("pre-expand")}
-      space_output <- expand_search_space(H_t, G_set, thresh)
+      space_output <- expand_search_space(H_t, G_set, thresh, max_sparsity)
       H_t_plus1 <- space_output$H_new
       update_nodes <- space_output$updatenodes
       if(verbose){print("post-expand")}
@@ -216,28 +221,44 @@ mcmc_sampler_step <- function(prec_t, G_t, H_t, K_t, e_t, alpha, beta,
     
     new_mappings <- parents_mapping(H_t_plus1, N, update_nodes,
                                     TRUE, map_pars)
-    new_full_scores <- score_full_space(H_t_plus1, new_mappings,
-                                        param, N, update_nodes, 
-                                        TRUE, full_score_list)
-    
-    new_banned_scores <- 
-      create_banned_parent_table(H_t_plus1, new_mappings, new_full_scores, 
-                                 N,update_nodes, TRUE,
-                                 space_banned_score_list)
     new_plus_mappings <- plus_parents_mapping(H_t_plus1, l, new_mappings, blacklist)
-    new_plus_scores <- score_plus_space(H_t_plus1, new_mappings, new_plus_mappings, 
-                                        param, N, update_nodes, TRUE, new_full_scores,
-                                        TRUE, plus_score_list)
-    new_banned_plus_scores <- create_banned_plus_parent_table(H_t_plus1, new_mappings,
-                                                              new_plus_mappings, 
-                                                              new_plus_scores$full_list,
-                                                              N, update_nodes, TRUE,
-                                                              plus_banned_list)
-    #considering the current space, and create new space scores for expansion
-    # K_Ht <- max(rowSums(H_t))
-    # l <- K_t - K_Ht
-    # l <- 1
-    # plus_pars <- plus_parents_mapping(H_t, l, map_pars)
+    if(is_expansion){
+      score_object <- score_plus_space_new(H_t_plus1, new_mappings, new_plus_mappings,
+                                           param, N, update_nodes, has_scores_orig=TRUE, 
+                                           has_plus_orig=TRUE, full_score_list, 
+                                           plus_score_list, map_pars, plus_pars, 
+                                           H_t, is_shrink=FALSE)
+      
+      banned_object <- create_banned_plus_parent_table_new(H_t_plus1, new_mappings,
+                                                           new_plus_mappings, 
+                                                           score_object$full_list,
+                                                           N, update_nodes, 
+                                                           has_scores_orig=TRUE, 
+                                                           space_banned_score_list,
+                                                           plus_banned_list, map_pars,
+                                                           H_t, is_shrink=FALSE)
+    }
+    else{
+      score_object <- score_plus_space_new(H_t_plus1, new_mappings, new_plus_mappings,
+                                           param, N, update_nodes, has_scores_orig=TRUE, 
+                                           has_plus_orig=TRUE, full_score_list, 
+                                           plus_score_list, map_pars, plus_pars, 
+                                           H_t, is_shrink=TRUE)
+      banned_object <- create_banned_plus_parent_table_new(H_t_plus1, new_mappings,
+                                                           new_plus_mappings, 
+                                                           score_object$full_list,
+                                                           N, update_nodes, 
+                                                           has_scores_orig=TRUE,
+                                                           space_banned_score_list,
+                                                           plus_banned_list, map_pars,
+                                                           H_t, is_shrink=TRUE)
+    }
+    new_full_scores <- score_object$curr_scores
+    new_plus_scores <- score_object$full_list
+    
+    new_banned_scores <- banned_object$curr_scores
+    new_banned_plus_scores <- banned_object$plus_scores
+    
     #sample new order
     prec_prime <- implement_order_v2(prec_t, move_type,
                                      new_banned_scores, new_mappings)
@@ -246,8 +267,6 @@ mcmc_sampler_step <- function(prec_t, G_t, H_t, K_t, e_t, alpha, beta,
     banned_pars <- banned_parents_mapping(new_mappings, prec_t_plus1, TRUE)
     graph_t_plus1 <- sample_graph(new_full_scores, prec_t_plus1, new_mappings, 
                                   banned_pars)
-    
-    
     
   }
   
@@ -258,10 +277,6 @@ mcmc_sampler_step <- function(prec_t, G_t, H_t, K_t, e_t, alpha, beta,
     prec_t_plus1 <- sample_from_2_orders(prec_t, prec_prime, 
                                          space_banned_score_list, map_pars)
     banned_pars <- banned_parents_mapping(map_pars, prec_t_plus1, TRUE)
-    
-    #standard inventory of current search space sparsity
-    # K_Ht <- max(rowSums(H_t))
-    # l <- K_t - K_Ht
     
     #standard sampling of graph
     graph_t_plus1 <- sample_graph(full_score_list, prec_t_plus1, map_pars, banned_pars)
@@ -299,691 +314,261 @@ mcmc_sampler_step <- function(prec_t, G_t, H_t, K_t, e_t, alpha, beta,
   
 }
 
-#description: wrapper function to perform the MCMC chain
-#parameters:  H_0 - starting search space
-#             param - scoring parameter object, constructed from package BiDAG
-#             alpha - numerator prior on the shrinkage weights
-#             beta - denominator prior on the shrinkage weights
-#             lambda - parameter for a Poisson sparsity prior 
-#                      (currently on hold)
-#             rho - exponent in shrinkage weights, between 0 and 1 
-#                   (larger weight means quicker to approach a denominator of
-#                    num of total steps instead of num of considered steps)
-#             zeta - exponent for tolerance threshold, between 0 and 1
-#                    (weight of 1 causes inv-linear decay, less is inv-sublinear)
-#             start_epsilon - tolerance at step 1 of the chain
-#             bounce - probability we bounce to a random graph in the space in the proposal
-#             d - number of graphs to sample at expansion steps
-#             thresh - threshold to add edges to the space from the d samples
-#             B - number of steps of the chain
-#             start_contract - step in the chain where contraction begins
-#             bound_contract - bound of minimal number of steps an edge
-#                              needs to be considered before removing it
-#             blacklist - list of any parent structures that are not allowed
-#             move_type - how to propose move types. Three current methods:
-#                         a. relocate - always performs node relocation
-#                         b. random - node relocation (NR) 1/3 of the time,
-#                                     local transposition (LT) 1/3,
-#                                     global swap (GS) 1/3
-#                         c. Kuipers - NR 6/(t+7), LT t/(t+7), GS 1/(t+7)
-#             verbose - prints the step in the chain number if TRUE, and when
-#                       shrinking/expanding occurs
-graph_mcmc_old <- function(H_0, param, alpha=1.25, beta=2, lambda=2.5, 
-                           rho=1/1000, zeta=0.85, start_epsilon=0.1, 
-                           bounce=0.000000005, d=1, thresh=0.000000001, B=25000, 
-                           start_contract=20, bound_contract=100,  
-                           blacklist=NULL, move_type="relocate", verbose=TRUE){
-  N <- nrow(H_0)
-  prec_b <- 1:N
-  K_b <- round(sqrt(N/2))
-  G_b <- matrix(0, nrow=N, ncol=N)
-  H_b <- H_0
-  epsilon_b <- start_epsilon
-  mappings <- parents_mapping(H_0)
-  full_scores <- score_full_space(H_0, mappings,param, N)
-  banned_scores <- create_banned_parent_table(H_0, mappings,full_scores, N)
-  plus_mappings <- plus_parents_mapping(H_0, 1, mappings, blacklist)
-  full_plus_scores <- score_plus_space(H_0, mappings, plus_mappings, param, N, 
-                                       has_scores_orig = TRUE, H_scores=full_scores)
-  banned_plus_scores <- create_banned_plus_parent_table(H_0, mappings, plus_mappings,
-                                                        full_plus_scores$full_list)
-  Gs <- array(dim=c(N, N, B))
-  precs <- matrix(nrow=B, ncol=N)
-  Hs <- array(dim=c(N, N, B))
-  Ks <- numeric(B)
-  selected <- matrix(0, nrow=N, ncol=N)
-  considered <- matrix(0, nrow=N, ncol=N)
-  weights_matr <- array(dim=c(N, N, B))
-  
-  for(b in 1:B){
-    if(verbose){
-      if(b %% 1 == 0){
-        print(paste("b: ", b))
-      }
-    }
-    sampler_step <- mcmc_sampler_step(prec_b, G_b, H_b, K_b, epsilon_b, 
-                                      alpha, beta, selected, considered, 
-                                      b, d, banned_scores, mappings,
-                                      full_scores, banned_plus_scores, 
-                                      plus_mappings, full_plus_scores,
-                                      param, lambda, rho, bounce, 
-                                      thresh, start_contract, move_type,
-                                      bound_contract, blacklist, verbose)
-    
-    G_b <- sampler_step$G_t_plus1
-    Gs[,,b] <- G_b
-    H_b <- sampler_step$H_t_plus1
-    Hs[,,b] <- H_b
-    prec_b <- sampler_step$prec_t_plus1
-    precs[b,] <- prec_b
-    selected <- sampler_step$s
-    considered <- sampler_step$c
-    K_b <- sampler_step$K_t_plus1
-    Ks[b] <- K_b
-    banned_scores <- sampler_step$banned_scores
-    full_scores <- sampler_step$order_scores
-    mappings <- sampler_step$par_mappings
-    banned_plus_scores <- sampler_step$banned_plus_scores
-    full_plus_scores <- sampler_step$order_plus_scores
-    plus_mappings <- sampler_step$plus_par_mappings
-    weights_matr[,,b] <- sampler_step$weights
-    epsilon_b <- start_epsilon/(b^zeta)
-  }
-  return(list(orders=precs, graphs=Gs, spaces=Hs, sparsity=Ks,
-              weights=weights_matr))
-}
-
-
-#description: 1 step of the MCMC sampler
-#parameters:  prec_t - order at step t
-#             G_t - graph at step t
-#             H_t - search space at step t
-#             K_t - sparsity at step t (currently on hold)
-#             e_t - shrinkage threshold at step t
-#             alpha - numerator prior on shrinkage weights
-#             beta - denominator prior on shrinkage weights
-#             selected - vector of num times each edge was selected in 1:t
-#             considered - vector of num times each edge was considered in 1:t
-#             t - step number in the chain
-#             d - number of graphs to draw at expansion
-#             space_banned_score_list - banned score list for scoring orders
-#             map_pars - hash tables for order scoring
-#             full_score_list - score lists for every valid parent set
-#             param - score parameter object, constructed from package BiDAG
-#             lamb - parameter for a Poisson sparsity prior (currently on hold)
-#             rho - exponent in shrinkage weights, between 0 and 1 
-#                   (larger weight means quicker to approach a denominator of
-#                    num of total steps instead of num of considered steps)
-#             bounce - probability we bounce to a random graph in the space in the proposal
-#             thresh - threshold to add edges to the space from the d samples
-#             start_contract - step in the chain where contraction begins
-#             move_probs - how to propose move types. Three current methods:
-#                          a. relocate - always performs node relocation
-#                          b. random - node relocation (NR) 1/3 of the time,
-#                                     local transposition (LT) 1/3,
-#                                     global swap (GS) 1/3
-#                         c. Kuipers - NR 6/(t+7), LT t/(t+7), GS 1/(t+7)
-#             bound_contract - bound of minimal number of steps an edge
-#                              needs to be considered before removing it
-#             verbose - prints the step in the chain number if TRUE, and when
-#                       shrinking/expanding occurs
-mcmc_sampler_step_old <- function(prec_t, G_t, H_t, K_t, e_t, alpha, beta, 
-                                  selected, considered, t, d, 
-                                  space_banned_score_list, map_pars,
-                                  full_score_list, plus_banned_list, 
-                                  plus_pars, plus_score_list,
-                                  param, lamb, rho, bounce,
-                                  thresh, start_contract, move_probs, 
-                                  bound_contract, blacklist, verbose){
-  N <- nrow(H_t)
-  l <- 1
-  #sampling whether we do any expansion/contraction steps
-  is_contraction <- sample(c(T, F), size=1, prob=c(1/sqrt(t), 1-1/sqrt(t)))
-  is_expansion <- sample(c(T, F), size=1, prob=c(1/sqrt(t), 1-1/sqrt(t)))
-  is_bounce <- sample(c(T, F), size=1, prob=c(bounce, 1-bounce))
-  
-  #sampling move type
-  if(move_probs=="Kuipers"){
-    move_type <- sample(c("global swap", "local transposition", "node relocation"), size=1,
-                        prob=c(1/(t+7), t/(t+7), 6/(t+7)))
-  }
-  else if(move_probs=="relocate"){
-    move_type <- "node relocation"
-  }
-  else{
-    move_type <- sample(c("global swap", "local transposition", "node relocation"), size=1,
-                        prob=c(1/3, 1/3, 1/3))
-  }
-  if(verbose){print(move_type)}
-  if(is_expansion){
-    #considering the current space, and create new space scores for expansion
-    # K_Ht <- max(rowSums(H_t))
-    # l <- K_t - K_Ht
-    # l <- 1
-    # plus_pars <- plus_parents_mapping(H_t, l, map_pars)
-    #sample new order
-    if(!is_bounce){
-      prec_prime <- implement_order_v2(prec_t, move_type,
-                                       space_banned_score_list, map_pars)
-      prec_t_plus1 <- sample_from_2_orders(prec_t, prec_prime, 
-                                           space_banned_score_list, map_pars)
-      banned_pars <- banned_parents_mapping(map_pars, prec_t_plus1, TRUE)
-      graph_t_plus1 <- sample_graph(full_score_list, prec_t_plus1, map_pars, 
-                                    banned_pars)
-      G_set <- vector(mode="list", length=d)
-      #create a set of extra graphs to permanently add to the space
-      for(i in 1:d){
-        temp <- sample_plus_graph(plus_score_list$full_list, prec_t_plus1, map_pars,
-                                  plus_banned_list, banned_pars, plus_pars)
-        G_set[[i]] <- temp
-      }
-      
-    }
-    else{
-      if(verbose){print("bouncing proposed")}
-      prec_prime <- implement_order_random(prec_t)
-      graph_prime <- sample_graph_random(prec_prime)
-      banned_pars_prime <- banned_parents_mapping(map_pars, prec_prime, TRUE)
-      banned_pars <- banned_parents_mapping(map_pars, prec_t, TRUE)
-      graph_output <- sample_from_2_graphs(G_t, graph_prime, full_score_list, map_pars, param)
-      graph_t_plus1 <- graph_output$graph
-      if(graph_output$choice == "t"){
-        if(verbose){print("bouncing rejected")}
-        prec_t_plus1 <- prec_t
-        G_set <- vector(mode="list", length=d)
-        #create a set of extra graphs to permanently add to the space
-        for(i in 1:d){
-          temp <- sample_plus_graph(plus_score_list$full_list, prec_t_plus1, map_pars,
-                                    plus_banned_list, banned_pars, plus_pars)
-          G_set[[i]] <- temp
-        }
-      }
-      else{
-        if(verbose){print("bouncing accepted")}
-        prec_t_plus1 <- prec_prime
-        G_set <- vector(mode="list", length=d+1)
-        #create a set of extra graphs to permanently add to the space
-        for(i in 1:d){
-          temp <- sample_plus_graph(plus_score_list$full_list, prec_t_plus1, map_pars,
-                                    plus_banned_list, banned_pars_prime, plus_pars)
-          G_set[[i]] <- temp
-        }
-        G_set[[d+1]] <- graph_t_plus1
-      }
-    }
-    
-    
-    if(verbose){print("pre-expand")}
-    space_output <- expand_search_space(H_t, G_set, thresh)
-    H_t_plus1 <- space_output$H_new
-    update_nodes <- space_output$updatenodes
-    new_mappings <- parents_mapping(H_t_plus1, N, update_nodes,
-                                    TRUE, map_pars)
-    new_full_scores <- score_full_space(H_t_plus1, new_mappings,
-                                        param, N, update_nodes, 
-                                        TRUE, full_score_list)
-    if(verbose){print("post-expand")}
-    new_banned_scores <- 
-      create_banned_parent_table(H_t_plus1, new_mappings, new_full_scores, 
-                                 N,update_nodes, TRUE,
-                                 space_banned_score_list)
-    new_plus_mappings <- plus_parents_mapping(H_t_plus1, l, new_mappings, blacklist)
-    new_plus_scores <- score_plus_space(H_t_plus1, new_mappings, new_plus_mappings, 
-                                        param, N, update_nodes, TRUE, new_full_scores,
-                                        TRUE, plus_score_list)
-    new_banned_plus_scores <- create_banned_plus_parent_table(H_t_plus1, new_mappings,
-                                                              new_plus_mappings, 
-                                                              new_plus_scores$full_list,
-                                                              N, update_nodes, TRUE,
-                                                              plus_banned_list)
-    if(verbose){print("post-banned")}
-  }
-  
-  else{
-    #standard sampling of an order
-    if(!is_bounce){
-      prec_prime <- implement_order_v2(prec_t, move_type, 
-                                       space_banned_score_list, map_pars)
-      prec_t_plus1 <- sample_from_2_orders(prec_t, prec_prime, 
-                                           space_banned_score_list, map_pars)
-      banned_pars <- banned_parents_mapping(map_pars, prec_t_plus1, TRUE)
-      
-      #standard inventory of current search space sparsity
-      # K_Ht <- max(rowSums(H_t))
-      # l <- K_t - K_Ht
-      
-      #standard sampling of graph
-      graph_t_plus1 <- sample_graph(full_score_list, prec_t_plus1, map_pars, banned_pars)
-      
-      #standard update of the search space
-      H_t_plus1 <- H_t
-      if((t < start_contract ) | (!is_contraction)){
-        new_full_scores <- full_score_list
-        new_banned_scores <- space_banned_score_list
-        new_mappings <- map_pars
-        new_plus_mappings <- plus_pars
-        new_plus_scores <- plus_score_list
-        new_banned_plus_scores <- plus_banned_list
-      }
-    }
-    else{
-      if(verbose){print("bouncing proposed")}
-      prec_prime <- implement_order_random(prec_t)
-      graph_prime <- sample_graph_random(prec_prime)
-      graph_output <- sample_from_2_graphs(G_t, graph_prime, full_score_list, map_pars, param)
-      graph_t_plus1 <- graph_output$graph
-      if(graph_output$choice == "t"){
-        if(verbose){print("bouncing rejected")}
-        prec_t_plus1 <- prec_t
-        H_t_plus1 <- H_t
-        if((t < start_contract ) | (!is_contraction)){
-          new_full_scores <- full_score_list
-          new_banned_scores <- space_banned_score_list
-          new_mappings <- map_pars
-          new_plus_mappings <- plus_pars
-          new_plus_scores <- plus_score_list
-          new_banned_plus_scores <- plus_banned_list
-        }
-      }
-      else{
-        if(verbose){print("bouncing accepted")}
-        prec_t_plus1 <- prec_prime
-        space_output <- expand_search_space(H_t, list(graph_t_plus1), thresh)
-        H_t_plus1 <- space_output$H_new
-        update_nodes <- space_output$updatenodes
-        new_mappings <- parents_mapping(H_t_plus1, N, update_nodes,
-                                        TRUE, map_pars)
-        new_full_scores <- score_full_space(H_t_plus1, new_mappings,
-                                            param, N, update_nodes, 
-                                            TRUE, full_score_list)
-        new_banned_scores <- 
-          create_banned_parent_table(H_t_plus1, new_mappings, new_full_scores, 
-                                     N,update_nodes, TRUE,
-                                     space_banned_score_list)
-        new_plus_mappings <- plus_parents_mapping(H_t_plus1, l, new_mappings, blacklist)
-        new_plus_scores <- score_plus_space(H_t_plus1, new_mappings, new_plus_mappings, 
-                                            param, N, update_nodes, TRUE, new_full_scores,
-                                            TRUE, plus_score_list)
-        new_banned_plus_scores <- create_banned_plus_parent_table(H_t_plus1, new_mappings,
-                                                                  new_plus_mappings, 
-                                                                  new_plus_scores$full_list,
-                                                                  N, update_nodes, TRUE,
-                                                                  plus_banned_list)
-      }
-    }
-  }
-  
-  weights_list <- create_weights(selected, considered, H_t, graph_t_plus1, t,
-                                 bound_contract, alpha, beta, 
-                                 rho)
-  selected_new <- weights_list$selected_new
-  considered_new <- weights_list$considered_new
-  weights_new <- weights_list$weights_new
-  if(is_contraction & (t >= start_contract)){
-    #perform contraction of the space
-    n <- param$N
-    set_size <- calculate_set_size(graph_t_plus1, n, N)
-    if(is_expansion){
-      if(verbose){print("pre-shrink")}
-      space_output <- shrink_search_space_v2(H_t_plus1, weights_new, set_size)
-      H_t_plus1 <- space_output$H_new
-      update_nodes <- space_output$updatenodes
-      new_mappings <- parents_mapping(H_t_plus1, N, update_nodes,
-                                      TRUE, map_pars)
-      new_full_scores <- score_full_space(H_t_plus1, new_mappings,
-                                          param, N, update_nodes, 
-                                          TRUE, full_score_list)
-      if(verbose){print("post-shrink")}
-      new_banned_scores <- 
-        create_banned_parent_table(H_t_plus1, new_mappings,new_full_scores, 
-                                   N,update_nodes, TRUE,
-                                   space_banned_score_list)
-      new_plus_mappings <- plus_parents_mapping(H_t_plus1, l, new_mappings, blacklist)
-      new_plus_scores <- score_plus_space(H_t_plus1, new_mappings, new_plus_mappings, 
-                                          param, N, update_nodes, TRUE, new_full_scores,
-                                          TRUE, plus_score_list)
-      new_banned_plus_scores <- create_banned_plus_parent_table(H_t_plus1, new_mappings,
-                                                                new_plus_mappings, 
-                                                                new_plus_scores$full_list,
-                                                                N, update_nodes, TRUE,
-                                                                plus_banned_list)
-      if(verbose){print("post-banned")}
-    }
-    else{
-      if(verbose){print("pre-shrink")}
-      n <- param$N
-      set_size <- calculate_set_size(graph_t_plus1, n, N)
-      space_output <- shrink_search_space_v2(H_t, weights_new, set_size)
-      H_t_plus1 <- space_output$H_new
-      update_nodes <- space_output$updatenodes
-      new_mappings <- parents_mapping(H_t_plus1, N, update_nodes,
-                                      TRUE, map_pars)
-      new_full_scores <- score_full_space(H_t_plus1, new_mappings,
-                                          param, N, update_nodes, 
-                                          TRUE, full_score_list)
-      if(verbose){print("post-shrink")}
-      new_banned_scores <- 
-        create_banned_parent_table(H_t_plus1, new_mappings,
-                                   new_full_scores, N,
-                                   update_nodes, TRUE, 
-                                   space_banned_score_list)
-      new_plus_mappings <- plus_parents_mapping(H_t_plus1, l, new_mappings, blacklist)
-      new_plus_scores <- score_plus_space(H_t_plus1, new_mappings, new_plus_mappings, 
-                                          param, N, update_nodes, TRUE, new_full_scores,
-                                          TRUE, plus_score_list)
-      new_banned_plus_scores <- create_banned_plus_parent_table(H_t_plus1, new_mappings,
-                                                                new_plus_mappings, 
-                                                                new_plus_scores$full_list,
-                                                                N, update_nodes, TRUE,
-                                                                plus_banned_list)
-      if(verbose){print("post-banned")}
-    }
-    
-  }
-  
-  #sample sparsity
-  # min_K <- min(K_t, K_Ht)
-  # max_K <- max(K_t, K_Ht)
-  # K_t_plus1_r <- exp(K_rel_prob_pois(min_K, abs(l), prec_t_plus1, graph_t_plus1, lamb))
-  # r <- min(1, K_t_plus_r)
-  # K_t_plus1 <- sample(min_K, max_K, 1, prob=c(1-r, r))
-  K_t_plus1 <- K_t
-  
-  return(list(prec_t_plus1=prec_t_plus1, G_t_plus1=graph_t_plus1, 
-              H_t_plus1=H_t_plus1, K_t_plus1=K_t_plus1, 
-              s=selected_new, c=considered_new,
-              order_scores = new_full_scores, 
-              banned_scores = new_banned_scores,
-              par_mappings = new_mappings,
-              order_plus_scores = new_plus_scores,
-              banned_plus_scores = new_banned_plus_scores,
-              plus_par_mappings = new_plus_mappings,
-              weights = weights_new))
-  
-}
-create_banned_parent_table <- function(H, map_pars, score_list, 
-                                       N=ncol(H), updatenodes=1:N,
-                                       has_scores_orig=FALSE, 
-                                       old_scores=NULL){
-  orderscore<-vector(mode="list", length=N)
-  for(i in 1:N){
-    if(!(i %in% updatenodes) & has_scores_orig){
-      orderscore[[i]] <- old_scores[[i]]
-    }
-    else{
-      zeta_vec <- score_list[[i]][,1]
-      N_pars <- length(map_pars$par_names[[i]])
-      if(N_pars > 0){
-        for(t in 1:N_pars){
-          index_t <- numeric(0)
-          for(colsy in 1:N_pars){
-            index_t <- c(index_t, which(t==map_pars$idx_pset[[i]][,colsy]))
-          }
-          for(rowsy in index_t){
-            mapped_val <- map_pars$maps[[i]]$forward[rowsy]-2^(t-1)
-            min_rowsy <- map_pars$maps[[i]]$backwards[mapped_val]
-            zeta_vec[rowsy] <- logSumExp(c(zeta_vec[rowsy], zeta_vec[min_rowsy]))
-          }
-          
-        }
-      }
-      orderscore[[i]] <- as.matrix(rev(zeta_vec))
-    }
-    
-  }
-  return(orderscore)
-}
-
-create_banned_parent_table_old <- function(H, map_pars, score_list, 
-                                       N=ncol(H), updatenodes=1:N,
-                                       has_scores_orig=FALSE, 
-                                       old_scores=NULL){
-  poset_pt<-list(length=N)
-  for(i in updatenodes){
-    Ni_rows <- nrow(map_pars$idx_pset[[i]])
-    Ni_cols <- ncol(map_pars$idx_pset[[i]])
-    poset_pt[[i]]<-matrix(NA,nrow=Ni_rows,ncol=Ni_cols)
-    offsets<-rep(1,Ni_rows)
-    
-    if(Ni_rows>1){
-      for(j in Ni_rows:2){
-        col_sel <- c(1:map_pars$numpars_vec[[i]][j])
-        p_nodes <- map_pars$idx_pset[[i]][j, col_sel]
-        children <-map_pars$maps[[i]]$backwards[map_pars$maps[[i]]$forward[j]-2^(p_nodes)/2]
-        poset_pt[[i]][cbind(children, offsets[children])]<-j
-        offsets[children]<-offsets[children]+1
-      }
-    }
-  }
-  orderscore<-vector(mode="list", length=N)
-  revnumpar_vec<-lapply(map_pars$numpars_vec,rev)
-  num_pars <- rowSums(H)
-  for(i in 1:N){
-    if(!(i %in% updatenodes) & has_scores_orig){
-      orderscore[[i]] <- old_scores[[i]]
-    }
-    else{
-      N_psets <- nrow(poset_pt[[i]])
-      N_ps <- num_pars[i]
-      binom_coef <- choose(N_ps, c(0:N_ps))
-      P_local<-vector(mode="numeric",length=N_psets)
-      P_local[N_psets] <- score_list[[i]][1,1]
-      P_local[1] <- logSumExp(score_list[[i]][,1])
-      cutoff <- 1
-      if(N_psets > 2){
-        for(l in 1:(N_ps-1)){
-          cutoff <- cutoff+binom_coef[l]
-          for(j in (N_psets-1):min(cutoff, N_psets-1)){
-            poset_pnodes <- poset_pt[[i]][j, c(1:revnumpar_vec[[i]][j])]
-            p_total <- logSumExp(P_local[poset_pnodes])-log(N_ps-revnumpar_vec[[i]][j]-l+1)
-            # max_par <- max(P_local[poset_pnodes])
-            # p_total_v2 <- log(sum(exp(P_local[poset_pnodes]-max_par)))+max_par-log(N_ps-revnumpar_vec[[i]][j]-l+1)
-            conj_score <- score_list[[i]][map_pars$maps[[i]]$backwards[N_psets-map_pars$maps[[i]]$forward[j]+1],1]
-            max_amt <- max(conj_score, p_total)
-            P_local[j] <- log(exp(conj_score-max_amt)+exp(p_total-max_amt))+max_amt
-          }
-        }
-      }
-      orderscore[[i]] <- as.matrix(P_local)
-    }
-    
-  }
-  return(orderscore)
-}
-
-#description: scoring the plus space conditional on the current order
-#parameters:  H - matrix of edges in H that are compatible with the order
-#             map_pars - hash tables for order scoring
-#             param - score parameter object, constructed from package BiDAG
-#             N - number of nodes
-#             updatenodes - nodes where scores need to be updated
-#             has_scores_orig - logical if scores have already been recorded
-#             H_scores - score_list
-score_full_space <- function(H, map_pars, param,
-                             N=ncol(H), updatenodes=1:N,
-                             has_scores_orig=FALSE, H_scores=NULL){
+score_plus_space_new <- function(H, map_pars, plus_pars, param,
+                                 N=ncol(H), updatenodes=1:N,
+                                 has_scores_orig=FALSE, H_scores=NULL, 
+                                 has_plus_orig=FALSE, H_plus_scores=NULL,
+                                 map_pars_orig=NULL, plus_pars_orig=NULL,
+                                 H_orig=NULL, is_shrink=FALSE){
   score_list <- vector(mode="list", length=N)
-  for(i in 1:N){
-    combos <- map_pars$par_pset[[i]]
-    par_vec <- map_pars$numpars_vec[[i]]
-    if(!(i %in% updatenodes) & has_scores_orig){
-      score_list[[i]] <- H_scores[[i]]
-    }
-    else{
-      n_parent_sets <- nrow(combos)
-      score_matr <- matrix(0, nrow=n_parent_sets, ncol=1)
-      for(j in 1:n_parent_sets){
-        if(j==1){
-          parent_group <- integer(0)
-        }
-        else{
-          parent_group <- combos[j, 1:c(par_vec[j])] 
-        }
-        score_matr[j, 1] <- bge_score_node(i, parent_group, N, param)
-      }
-      score_list[[i]] <- score_matr
-    }
-  }
-  return(score_list)
-}
-score_plus_space <- function(H, map_pars, plus_pars, param,
-                             N=ncol(H), updatenodes=1:N,
-                             has_scores_orig=FALSE, H_scores=NULL, 
-                             has_plus_orig=FALSE, H_plus_scores=NULL){
-  tot_scores <- vector(mode="list", length=N)
-  score_list <- vector(mode="list", length=N)
+  space_scores <- vector(mode="list", length=N)
   for(i in 1:N){
     if(!(i %in% updatenodes) & has_plus_orig){
-      score_list[[i]] <- H_plus_scores$full_list[[i]]
-      tot_scores[[i]] <- H_plus_scores$tot_scores_add[[i]]
+      space_scores[[i]] <- H_scores[[i]]
+      score_list[[i]] <- H_plus_scores[[i]]
     }
     else{
-      combos <- map_pars$par_pset[[i]]
-      par_vec <- map_pars$numpars_vec[[i]]
-      plus_combos <- plus_pars$par_pset[[i]]
-      nonpar_vec <- plus_pars$numpars_vec[[i]]
-      n_parent_sets <- nrow(combos)
-      n_nonparent_sets <- nrow(plus_combos)
-      if(n_nonparent_sets==1){
-        if(has_scores_orig){
-          score_matr <- H_scores[[i]]
-          score_sums <- logSumExp(score_matr)
-        }
-        else{
-          score_matr <- matrix(0, nrow=n_parent_sets, ncol=1)
-          for(j in 1:n_parent_sets){
-            if(j==1){
-              parent_group <- integer(0)
-            }
-            else{
-              parent_group <- combos[j, 1:c(par_vec[j])]
-            }
-            score_matr[j,1] <- bge_score_node(i, parent_group, N, param)
-            
+      if(is_shrink & has_plus_orig){
+        combos_orig <- map_pars_orig$par_pset[[i]]
+        removed_pars <- which(H_orig[i,]-H[i,]==1)
+        N_removed <- length(removed_pars)
+        if(N_removed==1){
+          removed_idx <- integer(0)
+          for(j in 1:ncol(combos_orig)){
+            removed_idx <- c(removed_idx, which(combos_orig[,j] %in% removed_pars))
           }
-          score_sums <- logSumExp(score_matr)
-        }
-        tot_scores[[i]] <- score_sums
-        score_list[[i]] <- score_matr
-      }
-      else{
-        score_lists <- vector(mode="list", length=n_nonparent_sets)
-        score_sums <- vector(mode="numeric", length=n_nonparent_sets)
-        for(k in 1:n_nonparent_sets){
-          if(k == 1 & has_scores_orig){
-            score_matr <- matrix(0, nrow=n_parent_sets, ncol=1)
-            score_matr[, 1] <- H_scores[[i]][, 1]
-            score_sums[1] <- logSumExp(score_matr[,1])
-            score_lists[[1]] <- score_matr
+          if(length(removed_idx)>0){
+            plus_scores <- H_plus_scores[[i]]
+            score_matr <- matrix(nrow=nrow(plus_scores)-length(removed_idx),
+                                 ncol=ncol(plus_scores)+length(removed_pars))
+            new_cols <- which(plus_pars$par_pset[[i]][,1] %in% removed_pars)
+            score_matr[,-new_cols] <- plus_scores[-removed_idx,]
+            score_matr[,new_cols] <- plus_scores[sort(removed_idx),1]
+            space_scores[[i]] <- matrix(score_matr[,1], ncol=1)
+            score_list[[i]] <- score_matr
           }
           else{
-            n_nonpar <- nonpar_vec[k]
-            nonparent_group <- plus_combos[k, 1:n_nonpar]
+            space_scores[[i]] <- H_scores[[i]]
+            score_list[[i]] <- H_plus_scores[[i]]
+          }
+        }
+        else if(N_removed>1){
+          removed_idx <- vector(mode="list", length=N_removed)
+          removed_idx_all <- integer(0)
+          for(k in 1:N_removed){
+            removed_idx_vec <- integer(0)
+            for(j in 1:ncol(combos_orig)){
+              removed_idx_vec <- c(removed_idx_vec, which(combos_orig[,j] %in% removed_pars[k]))
+            }
+            removed_idx[[k]] <- removed_idx_vec
+            removed_idx_all <- c(removed_idx_all, removed_idx_vec)
+          }
+          removed_idx_unique <- unique(removed_idx_all)
+          removed_idx_multiple <- as.numeric(names(which(table(removed_idx_all)>1)))
+          
+          plus_scores <- H_plus_scores[[i]]
+          score_matr <- matrix(nrow=nrow(plus_scores)-length(removed_idx_unique),
+                               ncol=ncol(plus_scores)+length(removed_pars))
+          new_cols <- which(plus_pars$par_pset[[i]][,1] %in% removed_pars)
+          score_matr[,-new_cols] <- plus_scores[-removed_idx_unique,]
+          for(k in 1:N_removed){
+            removed_idx_k <- setdiff(removed_idx[[k]], removed_idx_multiple)
+            score_matr[,new_cols[k]] <-plus_scores[sort(removed_idx_k),1]
+          }
+          space_scores[[i]] <- matrix(score_matr[,1], ncol=1)
+          score_list[[i]] <- score_matr
+        }
+        else{
+          space_scores[[i]] <- H_scores[[i]]
+          score_list[[i]] <- H_plus_scores[[i]]
+        }
+      }
+      else{
+        combos <- map_pars$par_pset[[i]]
+        par_vec <- map_pars$numpars_vec[[i]]
+        plus_combos <- plus_pars$par_pset[[i]]
+        nonpar_vec <- plus_pars$numpars_vec[[i]]
+        n_parent_sets <- nrow(combos)
+        n_nonparent_sets <- nrow(plus_combos)
+        if(n_nonparent_sets==1){
+          if(has_scores_orig){
+            score_matr <- H_scores[[i]]
+          }
+          else{
             score_matr <- matrix(0, nrow=n_parent_sets, ncol=1)
             for(j in 1:n_parent_sets){
               if(j==1){
-                if(k==1){
-                  full_set <- integer(0)
-                }
-                else{
-                  full_set <- nonparent_group
-                }
+                parent_group <- integer(0)
               }
               else{
-                if(k==1){
-                  full_set <- combos[j, 1:c(par_vec[j])] 
-                }
-                else{
-                  parent_group <- combos[j, 1:c(par_vec[j])] 
-                  full_set <- c(parent_group, nonparent_group)
-                }
+                parent_group <- combos[j, 1:c(par_vec[j])]
               }
-              score_matr[j, 1] <- bge_score_node(i, full_set, N, param)
+              score_matr[j,1] <- bge_score_node(i, parent_group, N, param)
+              
             }
-            score_lists[[k]] <- score_matr 
-            score_sums[k] <- logSumExp(score_matr[,1])
           }
+          score_list[[i]] <- score_matr
+          space_scores[[i]] <- matrix(score_matr[,1], ncol=1)
         }
-        score_list[[i]] <- score_lists
-        tot_scores[[i]] <- score_sums
+        else{
+          score_matr <- matrix(nrow=n_parent_sets, ncol=n_nonparent_sets)
+          for(k in 1:n_parent_sets){
+            if(k==1){
+              score_matr[k,] <- bge_score_plus_parent(i, NULL, plus_combos[-1,1], N, param)
+            }
+            else{
+              score_matr[k,] <- bge_score_plus_parent(i, combos[k,1:c(par_vec[k])], plus_combos[-1,1], N, param)
+            }
+            
+          }
+          space_scores[[i]] <- matrix(score_matr[,1], ncol=1)
+          score_list[[i]] <- score_matr
+        }
       }
     }
   }
-  return(list("full_list"=score_list, "tot_scores_add"=tot_scores))
+  return(list("curr_scores"=space_scores, "full_list"=score_list))
 }
 
 
-create_banned_plus_parent_table <- function(H, map_pars, plus_pars, 
-                                            score_plus_list, 
-                                            N=ncol(H), updatenodes=1:N,
-                                            has_scores_orig=FALSE, 
-                                            old_scores=NULL){
-  poset_pt<-list(length=N)
-  for(i in updatenodes){
-    Ni_rows <- nrow(map_pars$idx_pset[[i]])
-    Ni_cols <- ncol(map_pars$idx_pset[[i]])
-    poset_pt[[i]]<-matrix(NA,nrow=Ni_rows,ncol=Ni_cols)
-    offsets<-rep(1,Ni_rows)
-    
-    if(Ni_rows>1){
-      for(j in Ni_rows:2){
-        col_sel <- c(1:map_pars$numpars_vec[[i]][j])
-        p_nodes <- map_pars$idx_pset[[i]][j, col_sel]
-        children <-map_pars$maps[[i]]$backwards[map_pars$maps[[i]]$forward[j]-2^(p_nodes)/2]
-        poset_pt[[i]][cbind(children, offsets[children])]<-j
-        offsets[children]<-offsets[children]+1
-      }
-    }
+#Based on these two notes:
+# https://stackoverflow.com/questions/778047/we-know-log-add-but-how-to-do-log-subtract
+# https://cran.r-project.org/web/packages/Rmpfr/vignettes/log1mexp-note.pdf
+logMinusExp <-function(lx, ly){
+  value <- lx-ly
+  if(min(value)<=0){
+    min_idx <- which.min(value)
+    stop(paste("Computing log of a negative number. First number less than second at index",
+               min_idx, sep=" "))
   }
-  orderscore<-vector(mode="list", length=N)
-  revnumpar_vec<-lapply(map_pars$numpars_vec,rev)
-  num_pars <- rowSums(H)
+  value_return <- ifelse(ly == -Inf, lx,
+                         ifelse(value <= log(2), lx + log(-expm1(-value)),
+                                lx + log1p(-exp(-value))))
+  return(value_return)
+}
+
+create_banned_plus_parent_table_new <- function(H, map_pars, plus_pars,
+                                                score_plus_list,
+                                                N=ncol(H), updatenodes=1:N,
+                                                has_scores_orig=FALSE, orig_scores=NULL,
+                                                orig_scores_plus=NULL, orig_map_pars=NULL,
+                                                H_orig=NULL, is_shrink=FALSE){
+  orderscore_plus<-vector(mode="list", length=N)
+  orderscore_curr<-vector(mode="list", length=N)
   for(i in 1:N){
     if(!(i %in% updatenodes) & has_scores_orig){
-      orderscore[[i]] <- old_scores[[i]]
+      orderscore_plus[[i]] <- orig_scores_plus[[i]]
+      orderscore_curr[[i]] <- orig_scores[[i]]
     }
     else{
-      N_psets <- nrow(poset_pt[[i]])
-      N_ps <- num_pars[i]
-      binom_coef <- choose(N_ps, c(0:N_ps))
-      N_outside <- length(plus_pars$par_pset[[i]][,1])
-      P_local<-matrix(nrow=N_psets, ncol=N_outside)
-      
-      for(j in 1:N_outside){
-        if(N_outside==1){
-          P_local[N_psets, j] <- score_plus_list[[i]][1,1]
-          P_local[1, j] <- logSumExp(score_plus_list[[i]][,1])
-        }
-        else{
-          P_local[N_psets, j] <- score_plus_list[[i]][[j]][1,1]
-          P_local[1, j] <- logSumExp(score_plus_list[[i]][[j]][,1])
-        }
-        cutoff <- 1
-        if(N_psets > 2){
-          for(l in 1:(N_ps-1)){
-            cutoff <- cutoff + binom_coef[l]
-            for(k in (N_psets-1):min(cutoff, N_psets-1)){
-              poset_pnodes <- poset_pt[[i]][k, c(1:revnumpar_vec[[i]][k])]
-              p_total <- logSumExp(P_local[poset_pnodes, j])-log(N_ps-revnumpar_vec[[i]][k]-l+1)
-              ind_curr <- map_pars$maps[[i]]$backwards[N_psets-map_pars$maps[[i]]$forward[k]+1]
-              if(N_outside == 1){
-                conj_score <- score_plus_list[[i]][ind_curr,1]
-              }
-              else{
-                conj_score <- score_plus_list[[i]][[j]][ind_curr,1]
-              }
+      if(is_shrink & has_scores_orig){
+        combos_orig <- orig_map_pars$par_pset[[i]]
+        N_pars_orig <- length(orig_map_pars$par_names[[i]])
+        removed_pars <- which(H_orig[i,]-H[i,]==1)
+        N_removed <- length(removed_pars)
+        if(N_removed==1){
+          new_cols <- which(plus_pars$par_pset[[i]][,1] %in% removed_pars)
+          keep_idx <- integer(0)
+          if(N_pars_orig > 0){
+            for(colsy in 1:N_pars_orig){
+              keep_idx <- c(keep_idx, which(combos_orig[,colsy] %in% removed_pars))
+            }
+            if(length(keep_idx)>0){
+              plus_scores <- orig_scores_plus[[i]]
+              curr_scores <- orig_scores[[i]]
+              banned_matr <- matrix(nrow=length(keep_idx),
+                                    ncol=ncol(plus_scores)+N_removed)
+              banned_matr[,-new_cols] <- plus_scores[sort(keep_idx),]
+              banned_matr[,new_cols] <- logMinusExp(curr_scores[-keep_idx,], 
+                                                    banned_matr[,1])
               
-              max_amt <- max(conj_score, p_total)
-              P_local[k, j] <- log(exp(conj_score-max_amt)+exp(p_total-max_amt))+max_amt
+              orderscore_plus[[i]] <- banned_matr
+              orderscore_curr[[i]] <- matrix(banned_matr[,1], ncol=1)
+            }
+            else{
+              orderscore_plus[[i]] <- orig_scores_plus[[i]]
+              orderscore_curr[[i]] <- orig_scores[[i]]
             }
           }
+          else{
+            orderscore_plus[[i]] <- orig_scores_plus[[i]]
+            orderscore_curr[[i]] <- orig_scores[[i]] 
+          }
+        }
+        else if(N_removed > 1){
+          new_cols <- which(plus_pars$par_pset[[i]][,1] %in% removed_pars)
+          keep_idx_list <- vector(mode="list", length=N_removed)
+          keep_idx_all <- integer(0)
+          if(N_pars_orig > 0){
+            for(k in 1:N_removed){
+              keep_idx <- integer(0)
+              for(colsy in 1:N_pars_orig){
+                keep_idx <- c(keep_idx, which(combos_orig[,colsy]==removed_pars[[k]]))
+              }
+              keep_idx_list[[k]] <- keep_idx
+              keep_idx_all <- c(keep_idx_all, keep_idx)
+            }
+            keep_idx_every <- as.numeric(names(which(table(keep_idx_all)==N_removed)))
+            keep_idx_off1 <- as.numeric(names(which(table(keep_idx_all)==(N_removed-1))))
+          }
+          else{
+            orderscore_plus[[i]] <- orig_scores_plus[[i]]
+            orderscore_curr[[i]] <- orig_scores[[i]]
+          }
+          if(length(keep_idx_every) > 0){
+            plus_scores <- orig_scores_plus[[i]]
+            curr_scores <- orig_scores[[i]]
+            banned_matr <- matrix(nrow=length(keep_idx_every),
+                                  ncol=ncol(plus_scores)+N_removed)
+            banned_matr[,-new_cols] <- plus_scores[sort(keep_idx_every),]
+            for(k in 1:N_removed){
+              removed_idx <- setdiff(keep_idx_off1, keep_idx_list[[k]])
+              banned_matr[,new_cols[k]] <- logMinusExp(curr_scores[sort(removed_idx),],
+                                                       banned_matr[,1])
+            }
+            orderscore_plus[[i]] <- banned_matr
+            orderscore_curr[[i]] <- matrix(banned_matr[,1], ncol=1)
+          }
+          else{
+            orderscore_plus[[i]] <- orig_scores_plus[[i]]
+            orderscore_curr[[i]] <- orig_scores[[i]]
+          }
+        }
+        else{
+          orderscore_plus[[i]] <- orig_scores_plus[[i]]
+          orderscore_curr[[i]] <- orig_scores[[i]]
+        }
+        
+      }
+      else{
+        N_outside <- length(plus_pars$par_pset[[i]][,1])
+        N_pars <- length(map_pars$par_names[[i]])
+        zeta_matr <- score_plus_list[[i]]
+        N_scores <- nrow(zeta_matr)
+        if(N_pars > 0){
+          for(t in 1:N_pars){
+            index_t <- numeric(0)
+            for(colsy in 1:N_pars){
+              index_t <- c(index_t, which(t==map_pars$idx_pset[[i]][,colsy]))
+            }
+            for(rowsy in index_t){
+              mapped_val <- map_pars$maps[[i]]$forward[rowsy]-2^(t-1)
+              min_rowsy <- map_pars$maps[[i]]$backwards[mapped_val]
+              zeta_matr[rowsy,] <- colLogSumExps(zeta_matr[c(rowsy, min_rowsy),])
+            }
+          }
+          orderscore_plus[[i]] <- zeta_matr[N_scores:1,]
+          orderscore_curr[[i]] <- matrix(zeta_matr[N_scores:1,1], ncol=1)
+        }
+        else{
+          orderscore_plus[[i]] <- zeta_matr
+          orderscore_curr[[i]] <- matrix(zeta_matr[,1], ncol=1)
         }
       }
-      orderscore[[i]] <- P_local
     }
     
   }
-  return(orderscore)
+  return(list("plus_scores"=orderscore_plus, "curr_scores"=orderscore_curr))
 }
 #description: wrapper function for hash tables 
 #             H - current space
@@ -1166,6 +751,91 @@ bge_score_node <- function(j,parentnodes,N,param){
          })
   return(corescore)
 }
+
+
+bge_score_plus_parent <- function(j, parentnodes, plus_parentnodes, N, param){
+  TN<-param$TN
+  awpN<-param$awpN
+  scoreconstvec<-param$scoreconstvec
+  
+  lp<-length(parentnodes) #number of parents
+  lpp <- length(plus_parentnodes)
+  corescore_vec <- vector(length=lpp+1)
+  awpNd2<-(awpN-N+lp+1)/2
+  A<-TN[j,j]
+  
+  
+  TN_noplus <- TN[parentnodes, parentnodes]
+  TN_j_noplus <- TN[j, parentnodes]
+  TN_j_plus <- TN[j, plus_parentnodes]
+  TN_plus_off <- TN[parentnodes, plus_parentnodes]
+  TN_plus_on <- TN[plus_parentnodes, plus_parentnodes]
+  TN_plus_diag <- TN_plus_on[(lpp+1)*c(0:(lpp-1))+1]
+  
+  
+  
+  switch(as.character(lp),
+         "0"={# just a single term if no parents
+           corescore_vec[1] <- scoreconstvec[lp+1] -awpNd2*log(A)
+           D<-TN_plus_diag
+           logdetD<-log(D)
+           B<-TN_j_plus
+           logdetpart2<-log(A-B^2/D)
+           corescores <- scoreconstvec[lp+2]-(awpNd2+1/2)*logdetpart2 - logdetD/2
+           if (!is.null(param$logedgepmat)) { # if there is an additional edge penalisation
+             corescores <- corescores - as.numeric(param$logedgepmat[parentnodes, j])
+           }
+           corescore_vec[2:(lpp+1)] <- corescores
+         },
+         
+         "1"={# no need for matrices
+           D<-TN_noplus
+           logdetD<-log(D)
+           B<-TN_j_noplus
+           logdetpart2<-log(A-B^2/D)
+           corescore <- scoreconstvec[lp+1]-awpNd2*logdetpart2 - logdetD/2
+           logdetD_plus <- log(D*TN_plus_diag - as.numeric(TN_plus_off^2))
+           logdetpart2_plus <- log((D-B^2/A)*(TN_plus_diag-TN_j_plus^2/A)-
+                                     (TN_plus_off-TN_j_plus*B/A)^2)+log(A)-logdetD_plus
+           corescores <- scoreconstvec[lp+2]-(awpNd2+1/2)*logdetpart2_plus - logdetD_plus/2
+           if (!is.null(param$logedgepmat)) { # if there is an additional edge penalisation
+             penalty <- param$logedgepmat[parentnodes, j]
+             corescore <- corescore - penalty
+             plus_penalties <- as.numeric(param$logedgepmat[plus_parentnodes, j])
+             corescores <- corescores - penalty - plus_penalties
+           }
+           corescore_vec[1] <- corescore
+           corescore_vec[2:(lpp+1)] <- corescores
+         },
+         
+         {# otherwise we use cholesky decomposition to perform both
+           D <- TN_noplus
+           choltemp<-chol(D)
+           logdetD<-2*log(prod(choltemp[(lp+1)*c(0:(lp-1))+1]))
+           B<-TN_j_noplus
+           c_noplus <- backsolve(choltemp,B,transpose=TRUE)
+           logdetpart2<-log(A-sum(c_noplus^2))
+           corescore <- scoreconstvec[lp+1]-awpNd2*logdetpart2 - logdetD/2
+           
+           choltemp_new_12 <- backsolve(choltemp, TN_plus_off, transpose=TRUE)
+           choltemp_new_22 <- sqrt(TN_plus_diag - colsums(choltemp_new_12^2))
+           c_plusses <- as.numeric((TN_j_plus-t(choltemp_new_12) %*% c_noplus) / choltemp_new_22)
+           logdetD_plus <- logdetD + 2*log(choltemp_new_22)
+           logdetpart2_plus <- log(A-sum(c_noplus^2)-c_plusses^2)
+           corescores <- scoreconstvec[lp+2]-(awpNd2+1/2)*logdetpart2_plus - logdetD_plus/2
+           if (!is.null(param$logedgepmat)) { # if there is an additional edge penalisation
+             penalty <- sum(param$logedgepmat[parentnodes, j])
+             corescore <- corescore - penalty
+             plus_penalties <- as.numeric(param$logedgepmat[plus_parentnodes, j])
+             corescores <- corescores - penalty - plus_penalties
+           }
+           corescore_vec[1] <- corescore
+           corescore_vec[2:(lpp+1)] <- corescores
+           
+         })
+  return(corescore_vec)
+}
+
 
 #description: Updates the order from a move type (proportional to posterior)
 #parameters:  prec_t - order at current step
@@ -1509,22 +1179,26 @@ sample_plus_graph <- function(score_plus_list, prec, map_pars,
     N_plus_sets <- ncol(banned_plus_list[[i]])
     tot_scores <- banned_plus_list[[i]][banned_map_pars$banned_row[i],]
     prob_vec <- as.numeric(exp(tot_scores - logSumExp(tot_scores)))
+    # print(prob_vec)
     out_idx <- sample(1:N_plus_sets, size=1, prob=prob_vec)
+    # print(out_idx)
     
     valid_rows <- banned_map_pars$valid_pset_rows[[i]]
-    if(!is.null(dim(score_plus_list[[i]]))){
-      lookup_table <- score_plus_list[[i]][valid_rows,]
-    }
-    else{
-      lookup_table <- score_plus_list[[i]][[out_idx]][valid_rows,]
-    }
+    # print(prec)
+    # print(valid_rows)
+    lookup_table <- score_plus_list[[i]][valid_rows, out_idx]
     numpars_vec <- map_pars$numpars_vec[[i]][valid_rows]
     if(numpars_vec[length(numpars_vec)]==1){
       par_sets <- as.matrix(map_pars$par_pset[[i]][valid_rows,], ncol=1)
     }
     else{par_sets <- map_pars$par_pset[[i]][valid_rows,]}
     prob_vec2 <- as.numeric(exp(lookup_table-logSumExp(lookup_table)))
+    # print(prob_vec2)
     skel_idx <- sample(1:length(prob_vec2), size=1, prob=prob_vec2)
+    # print(skel_idx)
+    # print(par_sets)
+    # print(par_sets[skel_idx,])
+    # print(numpars_vec)
     out_parents <- plus_pars$par_pset[[i]][out_idx,1:plus_pars$numpars_vec[[i]][out_idx]]
     if(skel_idx != 1){
       skel_parents <- par_sets[skel_idx,1:numpars_vec[skel_idx]]
@@ -1685,7 +1359,7 @@ create_weights <- function(selected, considered, H, new_graph,
 #             Gs - set of graphs to add to search space
 #             thresh - threshold for percentage of graphs that contain an edge 
 #                      in order to add it to the space
-expand_search_space <- function(H, Gs, thresh=0.2){
+expand_search_space <- function(H, Gs, thresh=0.2, sparsity_limit=18){
   
   G_all <- matrix(0, nrow=nrow(H), ncol=ncol(H))
   
@@ -1696,6 +1370,12 @@ expand_search_space <- function(H, Gs, thresh=0.2){
   }
   G_all <- (G_all/(length(Gs))>thresh)*1
   H_new <- (H + G_all>=1)*1
+  
+  sparsity_count <- rowSums(H_new)
+  sparsity_reached <- which(sparsity_count >= sparsity_limit)
+  if(length(sparsity_reached)>0){
+    H_new[sparsity_reached,] <- H[sparsity_reached,]
+  }
   
   added_nodes <- H_new - H
   update_nodes <- c(1:nrow(H))[rowSums(added_nodes)>0]
@@ -1848,4 +1528,12 @@ are_equivalent <- function(g1, g2){
   cp2 <- BiDAG:::dagadj2cpadj(g2)
   compare <- abs(cp1 - cp2)
   return(max(compare)==0)
+}
+
+g2Q <- function(g, sparse = FALSE) {
+  Q <- get.adjacency(g, sparse = sparse)
+  perm <- sample.int(nrow(Q))
+  Q2 <- Q 
+  Q2[perm, perm] <- Q * upper.tri(Q)
+  Q2
 }
