@@ -148,8 +148,8 @@ clusterExport(cl, varlist=c("graph_mcmc", "rmvDAG", "g2Q", "create_weights",
                             "sample_graph", "sample_plus_graph", "sample_from_2_orders",
                             "sample_from_multiple_orders", "implement_order_v1",
                             "implement_order_v2", "dettwobytwo", "bge_score_node",
-                            "score_full_space", "score_plus_space", "create_banned_parent_table",
-                            "create_banned_plus_parent_table", "parents_mapping",
+                            "logMinusExp", "bge_score_plus_parent", "score_plus_space_new",
+                            "create_banned_plus_parent_table_new", "parents_mapping",
                             "create_parent_table_idx", "create_parent_table",
                             "banned_parents_mapping", "plus_parents_mapping",
                             "mcmc_sampler_step", "powerset", "index_finder_plus",
@@ -289,7 +289,7 @@ op <- foreach(method=graph_model, .errorhandling='pass', .combine='rbind') %:%
                 save(bestDAGs, file=paste(sim_root, folder_name1, folder_name2,
                                           file_name4, sep="/"))
                 
-                results_2 <- graph_mcmc(bestDAGs$endspace, score_par_sim, B=Bs_2, 
+                results_2 <- graph_mcmc(t(bestDAGs$endspace), score_par_sim, B=Bs_2, 
                                         verbose=FALSE)
                 
                 
