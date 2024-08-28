@@ -224,7 +224,7 @@ op <- foreach(method=graph_model, .errorhandling='pass', .combine='rbind') %:%
                                                                  nrow=2, ncol=2),
                                          block.sizes=c(floor(0.8*n), ceiling(0.2*n)),
                                          directed=TRUE)
-                  dagweights <- runif(n*n, min=-2, max=0.4)
+                  dagweights <- runif(n*n, min=-2, max=-0.4)
                   trueDAGedges <- g2Q(dagedges) * dagweights
                 }
                 else{
