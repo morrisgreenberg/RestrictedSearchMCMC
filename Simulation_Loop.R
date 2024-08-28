@@ -131,12 +131,13 @@ seeds <- 101:150
 replicates <- 1:5
 # pc_alg_thresh <- c(0.05, 0.5, 0.95)
 pc_alg_thresh <- c(0.95, 0.05)
-graph_model <- c("ERs", "iER", "SBM_2pos", "SBM_2neg", "SBM_2both")
+# graph_model <- c("ERs", "iER", "SBM_2pos", "SBM_2neg", "SBM_2both")
+graph_model <- c("ERs", "SBM_2pos")
 #nodes <- c(20, 200)
 nodes <- 20
 dataset_multiplier <- c(2, 10)
-# data_model <- c("Gaussian", "Log_Gaussian", "LogExp_Gaussian")
-data_model <- c("Gaussian")
+data_model <- c("Log_Gaussian")
+# data_model <- c("Gaussian")
 Bs <- 20000
 
 
