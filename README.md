@@ -8,11 +8,13 @@ Most simply, to run BROOD for a specific graph problem, you should call the `gra
 
 ```R
 source("./Scripts/BROOD_Functions.R")
+```
 
 By default, BROOD uses BGe scoring (Heckerman and Geiger, 1995) as natively provided in `BiDAG`. To perform DAG-Wishart (Ben-David et al, 2015) scoring, please source the data generation script as well:
 
 ```R
 source("./Scripts/Data_Generation_Functions.R")
+```
 
 **Note**: This allows a user to access `usrDAGcorescore` that points to our DAG-Wishart implementation, which overwrites the native `usrDAGcorescore` in the `BiDAG` R package (Suter and Kuipers). Its purpose is to act as a wrapper for creating the data structure used to perform restricted graph MCMC in `BiDAG` based on a user-specified scoring function.
 
@@ -28,11 +30,13 @@ Generate the flat-file database of task permutations. This will create `tasks.tx
 
 ```bash
 bash Scripts/Simulation_Pipeline/step_0_generate_tasks.slurm
+```
 
 ### 3. Launch Jobs on a Cluster
 
 ```bash
 sbatch Scripts/Simulation_Pipeline/step_1_job_script_to_launch_BROOD_on_cluster.slurm
+```
 
 ### 4. Output Structure
  
