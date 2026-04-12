@@ -1,22 +1,61 @@
 # RestrictedSearchMCMC
 
-Implementation of our Restricted Search MCMC methods for graph inference.
+Implementation of our Restricted Search MCMC methods for graph inference, Birth-death processes Restricted Over Order Distributions (BROOD).
 
-## Current (Potential) To-Dos:
-1. Add FCM data generation for simulations
-2. Add function to assess score-equivalence between 2 graphs (for the purpose of comparing true graph vs. output). We may rely on the `bnlearn` package for this.
+## Standard Usage (Local R Session)
 
-## Completed Tasks:
+Most simply, to run BROOD for a specific graph problem, you should call the `graph_mcmc()` function in `./Scripts/BROOD_Functions.R`. Please first source the script to load all helper functions into R, and ensure you have the following package dependencies installed: `Matrix`, `gtools`, `Rfast`, `BiDAG`.
 
-- 2023-09-06: Updated `generate_order_table` to be as/more efficient than equivalent BiDAG implementation
-- 2023-09-19: Created new functions `banned_parents_mapping`, `plus_parents_mapping`, `score_plus_space`, `create_banned_plus_parent_table`, `sample_plus_graph`, and modified `sample_graph` to make a faster algorithm
-- 2023-09-20: Updated the sampler to incorporate new scoring functions that were recently created, deleted `generate_order_score`, `generate_order_plus_score`, `score_full_space_order`, and `score_full_space_plus_order` as they became defunct after the new functions were implemented
-- 2023-09-26: Updated the sampler to pass the plus score and banned score objects throughout as often as possible (instead of inefficiently rerunning them each time an expansion is proposed).
-- 2023-10-29: Updated the sampler proposal bouncing to correct form for full support kernels at each transition (by creating `sample_graph_random`, `implement_order_random`, `sample_from_2_graphs`, and updated all other functions to accommodate for these)
-- 2024-02-16: Updated contraction method to select edges based on maximal edge set size rather than user-inputted tolerance threshold
-- 2024-03-30: Added `calculate_birth_rate`, `calculate_death_rate`, `sample_minus_graph`, and updated `banned_parents_mapping` to allow for minus set output.
-- 2024-04-19: Updated `graph_mcmc` and `mcmc_sampler_step` to allow for the birth-death process updates.
-- 2024-04-25: Added `rmvlogDAG` and `rmvlogexpDAG` for adding FMC data generation models, updated looping to account for equivalence.
-- 2024-06-16: Added `g2Q` to turn stochastic block model output from the `igraph` package (using `sample_sbm`) DAGs. Pushed code with warm-up of 10*n built in.
-- 2024-06-17: Updated `create_banned_parent_table` to use the fast zeta transform method explained in Viinikka et al. "Towards Scalable Bayesian Learning of Causal DAGs" (NeurIPS 2020).
-- 2024-07-10: Completed coding overhaul to make plus scoring and banned tables more efficient, via new functions `score_plus_space_new`, `create_banned_plus_parent_table_new`, `logMinusExp`, and `bge_score_plus_parent`.
+```R
+source("./Scripts/BROOD_Functions.R")
+
+By default, BROOD uses BGe scoring (Heckerman and Geiger, 1995) as natively provided in `BiDAG`. To perform DAG-Wishart (Ben-David et al, 2015) scoring, please source the data generation script as well:
+
+```R
+source("./Scripts/Data_Generation_Functions.R")
+
+**Note**: This allows a user to access `usrDAGcorescore` that points to our DAG-Wishart implementation, which overwrites the native `usrDAGcorescore` in the `BiDAG` R package (Suter and Kuipers). Its purpose is to act as a wrapper for creating the data structure used to perform restricted graph MCMC in `BiDAG` based on a user-specified scoring function.
+
+## Large-Scale Simulation Pipeline (SLURM Cluster)
+
+We also provide a complete SLURM pipeline to execute the sampler on our simulation settings in the `./Scripts/Simulation_Pipeline` directory.
+
+### 1. Configure Paths
+Open `Scripts/Simulation_Pipeline/step_0_generate_tasks.slurm` and `step_1_job_script_to_launch_BROOD_on_cluster.slurm`. Update the `PROJECT_ROOT` and `SCRIPT_DIR` variables to match the absolute paths on your cluster.
+
+### 2. Generate the Task Grid
+Generate the flat-file database of task permutations. This will create `tasks.txt` in the root of the project:
+
+```bash
+bash Scripts/Simulation_Pipeline/step_0_generate_tasks.slurm
+
+### 3. Launch Jobs on a Cluster
+
+```bash
+sbatch Scripts/Simulation_Pipeline/step_1_job_script_to_launch_BROOD_on_cluster.slurm
+
+### 4. Output Structure
+ 
+Once executed, the pipeline will automatically generate the following directories in your project root:
+
+	- `/logs/`: Contains `.out` and `.err` files from SLURM, and `debug_*.txt` R worker logs.
+
+	- `/Output/`: Contains the full `.Rdata` MCMC trace binaries.
+	- `/Output/summaries/`: Contains the lightweight, aggregated metrics (ROC, PR, F1, Time) ready for visualization.
+
+## References
+
+### BROOD Paper:
+[1] 
+
+### Other Related Work Directly Influencing This Directory:
+
+[2] Learning Bayesian networks: a unification for discrete and Gaussian domains. In *Proceedings of the Eleventh conference on Uncertainty in artificial intelligence*, UAI’95, pages 274–284, San Francisco, CA, USA. Morgan Kaufmann Publishers Inc.
+
+[3] Ben-David, E., Li, T., Massam, H., and Rajaratnam, B. (2015). High dimensional Bayesian inference for Gaussian directed acyclic graph models. arXiv:1109.4371 [math, stat].
+
+[4] Kuipers, J., Moffa, G., and Heckerman, D. (2014). Addendum on the scoring of Gaussian directed acyclic graphical models. *The Annals of Statistics*, 42(4).
+
+[5] Kuipers, J., Suter, P., and Moffa, G. (2021). Efficient sampling and structure learning of Bayesian networks. *Journal of Computational and Graphical Statistics*, 0(0):1–12.
+
+[6] Suter, P., Kuipers, J., Moffa, G., & Beerenwinkel, N. (2023). Bayesian Structure Learning and Sampling of Bayesian Networks with the R Package BiDAG. *Journal of Statistical Software*, 105(9), 1–31. https://doi.org/10.18637/jss.v105.i09
