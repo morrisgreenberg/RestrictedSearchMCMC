@@ -42,10 +42,10 @@ sbatch Scripts/Simulation_Pipeline/step_1_job_script_to_launch_BROOD_on_cluster.
  
 Once executed, the pipeline will automatically generate the following directories in your project root:
 
-	- `/logs/`: Contains `.out` and `.err` files from SLURM, and `debug_*.txt` R worker logs.
+- `/logs/`: Contains `.out` and `.err` files from SLURM, and `debug_*.txt` R worker logs.
 
-	- `/Output/`: Contains the full `.Rdata` MCMC trace binaries.
-	- `/Output/summaries/`: Contains the lightweight, aggregated metrics (ROC, PR, F1, Time) ready for visualization.
+- `/Output/`: Contains the full `.Rdata` MCMC trace binaries.
+- `/Output/summaries/`: Contains the lightweight, aggregated metrics (ROC, PR, F1, Time) ready for visualization.
 
 ## References
 
