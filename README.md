@@ -50,11 +50,11 @@ Once executed, the pipeline will automatically generate the following directorie
 ## References
 
 ### BROOD Paper:
-[1] 
+[1] Greenberg, M., Campbell, K., Craiu, R. Restricted Search Space Graph MCMC via Birth-Death Processes. arXiv:2604.10863 [stat].
 
 ### Other Related Work Directly Influencing This Directory:
 
-[2] Learning Bayesian networks: a unification for discrete and Gaussian domains. In *Proceedings of the Eleventh conference on Uncertainty in artificial intelligence*, UAI’95, pages 274–284, San Francisco, CA, USA. Morgan Kaufmann Publishers Inc.
+[2] Heckerman, D., Geiger D. Learning Bayesian networks: a unification for discrete and Gaussian domains. In *Proceedings of the Eleventh conference on Uncertainty in artificial intelligence*, UAI’95, pages 274–284, San Francisco, CA, USA. Morgan Kaufmann Publishers Inc.
 
 [3] Ben-David, E., Li, T., Massam, H., and Rajaratnam, B. (2015). High dimensional Bayesian inference for Gaussian directed acyclic graph models. arXiv:1109.4371 [math, stat].
 
