@@ -959,7 +959,7 @@ create_parent_table_idx <- function(H, N=ncol(H), updatenodes=1:N,
           new_rows <- gtools::combinations(N_parents, r)
           n_combos <- nrow(new_rows)
           
-          parent_matrix[current_row:(current_row + n_combos - 1), 1:r] <- new_combos
+          parent_matrix[current_row:(current_row + n_combos - 1), 1:r] <- new_rows
           current_row <- current_row + n_combos
         }
         par_list[[i]] <- parent_matrix
@@ -993,7 +993,7 @@ create_parent_table <- function(H, N=ncol(H), updatenodes=1:N,
           new_rows <- gtools::combinations(N_parents, r, parent_nodes)
           n_combos <- nrow(new_rows)
           
-          parent_matrix[current_row:(current_row + n_combos - 1), 1:r] <- new_combos
+          parent_matrix[current_row:(current_row + n_combos - 1), 1:r] <- new_rows
           current_row <- current_row + n_combos
         }
         par_list[[i]] <- parent_matrix
