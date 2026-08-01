@@ -2,6 +2,7 @@ library(Matrix)
 library(gtools)
 library(Rfast)
 library(BiDAG)
+library(matrixStats)
 
 # ==============================================================================
 # 1. MAIN WRAPPER: graph_mcmc
@@ -116,11 +117,10 @@ graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1,
     curr_weight <- if(save_curr_weight) step$weight else NULL
     curr_update <- step$update_type
     
-    H_b <- if(sparse) Matrix::Matrix(step$H_t_plus1, sparse=TRUE) else step$H_t_plus1
-    G_b <- if(sparse) Matrix::Matrix(step$G_t_plus1, sparse=TRUE) else step$G_t_plus1
-    G1_b <- if(!plus1) (if(sparse) Matrix::Matrix(step$G1_t_plus1, sparse=TRUE) else step$G1_t_plus1) else NULL
-    L_b <- if(sample_parameters) (if(sparse) Matrix::Matrix(step$L_t_plus1, sparse=TRUE) else step$L_t_plus1) else NULL
-    
+    H_b <- step$H_t_plus1
+    G_b <- step$G_t_plus1
+    G1_b <- if(!plus1) step$G1_t_plus1 else NULL
+    L_b <- if(sample_parameters) step$L_t_plus1 else NULL
     
     # Store thinned samples
     if(b %in% thinned_samples) {
@@ -139,11 +139,11 @@ graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1,
         if(sample_parameters) Ls[,,idx] <- L_b
       }
       else{
-        Gs[[idx]] <- G_b
-        skels[[idx]] <- (G_b + t(G_b)>0)*1
-        Hs[[idx]] <- H_b
-        if(!plus1) G1s[[idx]] <- G1_b
-        if(sample_parameters) Ls[[idx]] <- L_b
+        Gs[[idx]] <- Matrix::Matrix(G_b, sparse=TRUE)
+        skels[[idx]] <- Matrix::Matrix((G_b + t(G_b)>0)*1, sparse=TRUE)
+        Hs[[idx]] <- Matrix::Matrix(H_b, sparse=TRUE)
+        if(!plus1) G1s[[idx]] <- Matrix::Matrix(G1_b, sparse=TRUE)
+        if(sample_parameters) Ls[[idx]] <- Matrix::Matrix(L_b, sparse=TRUE)
       }
       
     }
@@ -468,7 +468,7 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
       }
       
     }
-    banned_pars <- new_banned_mappings
+    banned_pars <- banned_parents_mapping(new_mappings, prec_t_plus1, TRUE, TRUE)
     if(plus1){
       graph_t_plus1 <- sample_graph(new_full_scores, prec_t_plus1, new_mappings, 
                                     banned_pars, plus_1 = TRUE, new_plus_scores,
@@ -531,7 +531,10 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
       if(move_type != "node relocation"){
         banned_pars <- update_order_obj$banned_pars
       } else {
-        banned_pars <- banned_parents_mapping(map_pars, prec_t_plus1, TRUE, TRUE)
+        loc_n1 <- which(prec_t == update_order_obj$relocated_node)
+        update_nodes <- nodes_affected_by_relocation(prec_t, loc_n1, update_order_obj$new_spot)
+        banned_pars <- banned_parents_mapping(map_pars, prec_t_plus1, TRUE, TRUE,
+                                              updatenodes = update_nodes, old_map = banned_pars)
       }
     }
     
@@ -1430,6 +1433,20 @@ implement_order <- function(prec_t, move_type,
                                        space_banned_plus_list))
   }
 }
+
+# Helper function for affected-node set for a node relocation move update.
+# Unlike nodes_affected_by_order_move() (H-based, correct for swap moves), this
+# is position-range-based: any node sitting between the old and new
+# position is affected regardless of whether it lists the relocated node as a
+# candidate parent under H.
+#' @param prec      order before the relocation
+#' @param location  the relocated node's original position
+#' @param new_spot  the relocated node's new position
+nodes_affected_by_relocation <- function(prec, location, new_spot){
+  lo <- min(location, new_spot); hi <- max(location, new_spot)
+  return(unique(prec[lo:hi]))
+}
+
 # Helper function for expanding moved node(s) into the full set of nodes needing an update
 #' @param moved_nodes node ids whose position in the order changed
 #' @param H           current search space adjacency matrix
@@ -1437,7 +1454,7 @@ implement_order <- function(prec_t, move_type,
 nodes_affected_by_order_move <- function(moved_nodes, H){
   affected <- moved_nodes
   for(m in moved_nodes){
-    # anyone who currently lists m as a candidate parent needs a refresh,
+    # any node who currently lists m as a candidate parent needs a refresh,
     # since whether m precedes or follows them in the order may have flipped
     affected <- c(affected, which(H[, m] == 1))
   }
@@ -1609,10 +1626,12 @@ sample_from_node_relocation <- function(prec_orig, location,
             allowedcol_iminus1 <- which(nonparents_iminus1 %in% prec_new[i:N])
           }
         }
+        allowedcol_iminus1 <- which(nonparents_iminus1 %in% prec_new[i:N])
         score_mat[i, i] <- logSumExp(
           space_banned_plus_list[[relocated_node]][bannedrow_i, c(1, allowedcol_i+1)])
         score_mat[i, i-1] <- logSumExp(
           space_banned_plus_list[[new_node]][bannedrow_iminus1, c(1, allowedcol_iminus1+1)])
+        
       }
     }
   }
@@ -1633,7 +1652,8 @@ sample_from_node_relocation <- function(prec_orig, location,
     prec_new[new_spot] <- relocated_node
     prec_new[(new_spot+1):location] <- prec_orig[new_spot:(location-1)]
   }
-  return(list(order=prec_new, score=score_mat[new_spot,]))
+  return(list(order=prec_new, score=score_mat[new_spot,],
+              relocated_node=relocated_node, new_spot=new_spot))
 }
 
 
