@@ -47,11 +47,17 @@ graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1,
   max_change <- if(is.null(max_change)) 1 else max_change
   if(max_change < 1 | max_change > N) stop("Please make max_change between 1:N")
   
+  if(max_sparsity > N-1){
+    warning(paste("max_sparsity set to be more than number of nodes minus 1. Switching to be ", N-1))
+    max_sparsity <- N-1
+  }
+  
   warm_up <- if(is.null(warm_up)) 10 * N else warm_up
   total_iter <- iter + warm_up + 1
   
   # -- Initialization --
   prec_b <- 1:N
+  pos_b <- 1:N   # prec_b starts as the identity, so pos_b == prec_b at t=0
   K_b <- round(sqrt(N/2))
   H_b <- H_0
   
@@ -97,13 +103,14 @@ graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1,
     step <- mcmc_sampler_step(prec_b, H_b, K_b, b, d_expand, d_shrink, 
                               banned_scores, mappings, banned_mappings, plus_mappings, 
                               full_scores, banned_plus_scores, full_plus_scores, 
-                              order_score, param, c_star, space_move_prob, 
+                              order_score, param, pos_b, c_star, space_move_prob, 
                               score_type, sample_parameters, rounded, max_change, 
                               thresh, move_type, warm_up, max_sparsity, plus1, 
                               blacklist, save_curr_weight, verbose=FALSE)
     
     # Update state
     prec_b <- step$prec_t_plus1
+    pos_b <- step$pos_t_plus1
     K_b <- step$K_t_plus1
     banned_scores <- step$banned_scores
     full_scores <- step$order_scores
@@ -177,6 +184,7 @@ graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1,
 #' @param plus_score_list (+1) score lists for every valid parent set
 #' @param order_score nodewise score values for the current order
 #' @param param score parameter object, constructed from package BiDAG
+#' @param pos_t positioning parameter for order lookups
 #' @param c_star scaling constant to offset death rates if wanting a larger search space
 #' @param prob_adapt probability of transitioning to another space
 #' @param thresh threshold to add edges to the space from the d samples
@@ -197,12 +205,17 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
                               map_pars, banned_pars, plus_pars,
                               full_score_list, plus_banned_list, 
                               plus_score_list, order_score,
-                              param, c_star, prob_adapt, score_type,
+                              param, pos_t, c_star, prob_adapt, score_type,
                               to_sample_params, rounded, max_change, thresh, 
                               move_probs, warm_up, max_sparsity, plus1, 
                               blacklist, save_waiting_times, verbose){
   N <- nrow(H_t)
   l <- 1
+  
+  if(is.null(pos_t)){
+    pos_t <- integer(N)
+    pos_t[prec_t] <- seq_along(prec_t)
+  }
   
   is_adaption <- F
   if(t>warm_up){
@@ -328,8 +341,11 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
     
     if(length(update_nodes)>0){
       proposed_mappings <- parents_mapping(H_proposal, N, update_nodes,TRUE, map_pars)
-      proposed_plus_mappings <- plus_parents_mapping(H_proposal, l, proposed_mappings, blacklist)
-      proposed_banned_mappings <- banned_parents_mapping(proposed_mappings, prec_t, TRUE, TRUE)
+      proposed_plus_mappings <- plus_parents_mapping(H_proposal, l, proposed_mappings, blacklist,
+                                                     updatenodes = update_nodes, old_map = plus_pars)
+      proposed_banned_mappings <- banned_parents_mapping(proposed_mappings, prec_t, TRUE, TRUE,
+                                                         updatenodes = update_nodes, old_map = banned_pars,
+                                                         pos = pos_t)
       if(is_expansion){
         score_object <- score_plus_space(H_proposal, proposed_mappings, proposed_plus_mappings,
                                          param, score_type, N, update_nodes, 
@@ -432,7 +448,8 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
     if(!plus1){
       update_order_obj <- implement_order(prec_t, move_type,
                                           new_banned_scores, new_mappings,
-                                          new_banned_mappings, new_order_score, H=H_t_plus1)
+                                          new_banned_mappings, new_order_score, H=H_t_plus1,
+                                          pos_t=pos_t)
       prec_prime <- update_order_obj$order
       order_score_prime <- update_order_obj$score 
       if(move_type != "node relocation"){
@@ -440,18 +457,24 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
                                              new_banned_scores, new_mappings)
         if(sum(prec_t_plus1!=prec_t)>0){
           order_score <- order_score_prime
+          pos_t_plus1 <- update_order_obj$pos
+        } 
+        else {
+          pos_t_plus1 <- pos_t
         }
       }
       else{
         prec_t_plus1 <- prec_prime
         order_score <- order_score_prime
+        pos_t_plus1 <- update_order_obj$pos
       }
     }
     else{
       update_order_obj <- implement_order(prec_t, move_type,
                                           new_banned_scores, new_mappings,
                                           new_banned_mappings, new_order_score,
-                                          TRUE, new_banned_plus_scores, H_t_plus1)
+                                          TRUE, new_banned_plus_scores, H_t_plus1,
+                                          pos_t=pos_t)
       prec_prime <- update_order_obj$order
       order_score_prime <- update_order_obj$score
       if(move_type != "node relocation"){
@@ -460,15 +483,20 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
                                              new_banned_plus_scores)
         if(sum(prec_t_plus1!=prec_t)>0){
           order_score <- order_score_prime
+          pos_t_plus1 <- update_order_obj$pos
+        } 
+        else {
+          pos_t_plus1 <- pos_t
         }
       }
       else{
         prec_t_plus1 <- prec_prime
         order_score <- order_score_prime
+        pos_t_plus1 <- update_order_obj$pos
       }
       
     }
-    banned_pars <- banned_parents_mapping(new_mappings, prec_t_plus1, TRUE, TRUE)
+    banned_pars <- banned_parents_mapping(new_mappings, prec_t_plus1, TRUE, TRUE, pos=pos_t_plus1)
     if(plus1){
       graph_t_plus1 <- sample_graph(new_full_scores, prec_t_plus1, new_mappings, 
                                     banned_pars, plus_1 = TRUE, new_plus_scores,
@@ -489,7 +517,7 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
       #standard sampling of an order
       update_order_obj <- implement_order(prec_t, move_type, 
                                           space_banned_score_list, map_pars,
-                                          banned_pars, order_score, H=H_t)
+                                          banned_pars, order_score, H=H_t, pos_t=pos_t)
       prec_prime <- update_order_obj$order
       order_score_prime <- update_order_obj$score
       if(move_type != "node relocation"){
@@ -497,11 +525,16 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
                                              space_banned_score_list, map_pars)
         if(sum(prec_t_plus1!=prec_t)>0){
           order_score <- order_score_prime
+          pos_t_plus1 <- update_order_obj$pos
+        } 
+        else {
+          pos_t_plus1 <- pos_t
         }
       }
       else{
         prec_t_plus1 <- prec_prime
         order_score <- order_score_prime
+        pos_t_plus1 <- update_order_obj$pos
       }
       
     }
@@ -510,7 +543,7 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
       update_order_obj <- implement_order(prec_t, move_type, 
                                           space_banned_score_list, map_pars,
                                           banned_pars, order_score,
-                                          TRUE, plus_banned_list, H_t)
+                                          TRUE, plus_banned_list, H_t, pos_t=pos_t)
       prec_prime <- update_order_obj$order
       order_score_prime <- update_order_obj$score
       if(move_type != "node relocation"){
@@ -519,11 +552,16 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
                                              TRUE, plus_banned_list)
         if(sum(prec_t_plus1!=prec_t)>0){
           order_score <- order_score_prime
+          pos_t_plus1 <- update_order_obj$pos
+        } 
+        else {
+          pos_t_plus1 <- pos_t
         }
       }
       else{
         prec_t_plus1 <- prec_prime
         order_score <- order_score_prime
+        pos_t_plus1 <- update_order_obj$pos
       }
     }
     if(sum(prec_t_plus1 != prec_t)> 0){
@@ -531,10 +569,11 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
       if(move_type != "node relocation"){
         banned_pars <- update_order_obj$banned_pars
       } else {
-        loc_n1 <- which(prec_t == update_order_obj$relocated_node)
+        loc_n1 <- pos_t[update_order_obj$relocated_node]
         update_nodes <- nodes_affected_by_relocation(prec_t, loc_n1, update_order_obj$new_spot)
         banned_pars <- banned_parents_mapping(map_pars, prec_t_plus1, TRUE, TRUE,
-                                              updatenodes = update_nodes, old_map = banned_pars)
+                                              updatenodes = update_nodes, old_map = banned_pars,
+                                              pos = pos_t_plus1)
       }
     }
     
@@ -584,7 +623,8 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
                       curr_order_score = order_score,
                       banned_par_mappings = banned_pars,
                       plus_par_mappings = new_plus_mappings,
-                      update_type = type_of_update)
+                      update_type = type_of_update,
+                      pos_t_plus1 = pos_t_plus1)
   
   if(save_waiting_times){
     output_list$weight <- w_t_plus1
@@ -1388,23 +1428,31 @@ dagwishart_score_plus_parent <- function(j, parentnodes, plus_parentnodes, N, pa
 #' @param plus1                   indicator for whether to consider (+1) scores for order moves
 #' @param space_banned_plus_list  banned plus score table for (+1) scoring orders
 #' @param H                       search space
+#' @param pos_t                   positioning values for order lookups
 implement_order <- function(prec_t, move_type,
                             space_banned_score_list, map_pars,
                             banned_pars, order_score,
                             plus_1=FALSE, space_banned_plus_list,
-                            H=NULL){
+                            H=NULL, pos_t=NULL){
   N <- length(prec_t)
+  if(is.null(pos_t)){
+    pos_t <- integer(N)
+    pos_t[prec_t] <- seq_along(prec_t)
+  }
   
   if(move_type %in% c("local transposition", "global swap")){
     if(move_type=="local transposition"){
       node1 <- sample(1:(N-1), size=1)
       changed_nodes <- c(node1, node1+1)
-    } else {
+    } 
+    else {
       changed_nodes <- sample(1:N, 2, replace=FALSE)
     }
     moved_ids <- prec_t[changed_nodes]           # actual node identities that moved
     prec_tplus1 <- prec_t
     prec_tplus1[changed_nodes] <- prec_t[rev(changed_nodes)]
+    pos_tplus1 <- pos_t
+    pos_tplus1[moved_ids] <- rev(changed_nodes)
     
     update_nodes <- nodes_affected_by_order_move(moved_ids, H)
     
@@ -1412,25 +1460,26 @@ implement_order <- function(prec_t, move_type,
                                               create_plus_sets = plus_1,
                                               create_minus_sets = FALSE,
                                               updatenodes = update_nodes,
-                                              old_map = banned_pars)
+                                              old_map = banned_pars,
+                                              pos = pos_tplus1)
     
     curr_score <- calculate_order_score(banned_pars_new, space_banned_score_list, plus_1,
                                         space_banned_plus_list)
     
-    return(list(order=prec_tplus1, score=curr_score, banned_pars=banned_pars_new))
+    return(list(order=prec_tplus1, score=curr_score, banned_pars=banned_pars_new, pos=pos_tplus1))
   }
   
   if(move_type=="node relocation"){
     #sampling a node which will be moved to create the proposal
     node1 <- sample(1:N, size=1)
-    loc_n1 <- which(prec_t==node1)
+    loc_n1 <- pos_t[node1]
     if(!plus_1){
       return(sample_from_node_relocation(prec_t, loc_n1, banned_pars, order_score,
-                                         space_banned_score_list, map_pars))
+                                         space_banned_score_list, map_pars, pos_orig=pos_t))
     }
     return(sample_from_node_relocation(prec_t, loc_n1, banned_pars, order_score,
                                        space_banned_score_list, map_pars, TRUE,
-                                       space_banned_plus_list))
+                                       space_banned_plus_list, pos_orig=pos_t))
   }
 }
 
@@ -1522,15 +1571,26 @@ sample_from_2_orders <- function(prec_t, prec_prime,
 #' @param map_pars                hash table for quick scoring
 #' @param plus_1                  whether to score based on the +1 list or not
 #' @param space_banned_plus_list  (+1) banned score table for scoring (+1) orders
+#' @param pos_orig                position placement lookups for the order
 sample_from_node_relocation <- function(prec_orig, location,
                                         banned_pars, order_score,
                                         space_banned_score_list,
                                         map_pars,plus_1 = FALSE, 
-                                        space_banned_plus_list=NULL){
+                                        space_banned_plus_list=NULL, pos_orig=NULL){
   relocated_node <- prec_orig[location]
   N <- length(prec_orig)
   score_mat <- matrix(0, nrow=N, ncol=N)
   score_mat[location,] <- order_score
+  
+  if(is.null(pos_orig)){
+    pos_orig <- integer(N)
+    pos_orig[prec_orig] <- seq_along(prec_orig)
+  }
+  # pos_new is maintained incrementally alongside score_mat: at each sweep step,
+  # relocated_node and new_node simply swap positions relative to the previous.
+  pos_new <- pos_orig
+  pos_chosen <- vector(mode="list", length=N)
+  pos_chosen[[location]] <- pos_orig
   
   if(location > 1){
     for(i in (location-1):1){
@@ -1538,6 +1598,8 @@ sample_from_node_relocation <- function(prec_orig, location,
       prec_new <- prec_orig
       prec_new[i] <- relocated_node
       prec_new[(i+1):location] <- prec_orig[i:(location-1)]
+      pos_new[new_node] <- pos_new[relocated_node]
+      pos_new[relocated_node] <- i
       if(location < N){
         score_mat[i, (location+1):N] <- score_mat[location, (location+1):N]
       }
@@ -1555,12 +1617,12 @@ sample_from_node_relocation <- function(prec_orig, location,
       bannedrow_iplus1 <- 1
       
       if(i > 1){
-        bannedvalues_i <- which(allparents_i %in% prec_new[1:(i-1)])
+        bannedvalues_i <- which(pos_new[allparents_i] < i)
         if(length(bannedvalues_i)>0 & !is.na(bannedvalues_i[1])){
           bannedrow_i <- map_pars$maps[[relocated_node]]$backwards[sum(2^bannedvalues_i)/2+1]
         }
       }
-      bannedvalues_iplus1 <- which(allparents_iplus1 %in% prec_new[1:i])
+      bannedvalues_iplus1 <- which(pos_new[allparents_iplus1] <= i)
       if(length(bannedvalues_iplus1)>0 & !is.na(bannedvalues_iplus1[1])){
         bannedrow_iplus1 <- map_pars$maps[[new_node]]$backwards[sum(2^bannedvalues_iplus1)/2+1]
       }
@@ -1572,9 +1634,9 @@ sample_from_node_relocation <- function(prec_orig, location,
         allowedcol_i <- integer(0)
         allowedcol_iplus1 <- integer(0)
         if(i < N){
-          allowedcol_i <- which(nonparents_i %in% prec_new[(i+1):N])
+          allowedcol_i <- which(pos_new[nonparents_i] > i)
           if(i < N-1){
-            allowedcol_iplus1 <- which(nonparents_iplus1 %in% prec_new[(i+2):N])
+            allowedcol_iplus1 <- which(pos_new[nonparents_iplus1] > i+1)
           }
         }
         score_mat[i, i] <- logSumExp(
@@ -1582,15 +1644,19 @@ sample_from_node_relocation <- function(prec_orig, location,
         score_mat[i, i+1] <- logSumExp(
           space_banned_plus_list[[new_node]][bannedrow_iplus1, c(1, allowedcol_iplus1+1)])
       }
+      pos_chosen[[i]] <- pos_new
     }
     
   }
+  pos_new <- pos_orig
   if(location < N){
     for(i in (location+1):N){
       new_node <- prec_orig[i]
       prec_new <- prec_orig
       prec_new[i] <- relocated_node
       prec_new[location:(i-1)] <- prec_orig[(location+1):i]
+      pos_new[new_node] <- pos_new[relocated_node]
+      pos_new[relocated_node] <- i
       
       score_mat[i, 1:(location-1)] <- score_mat[location, 1:(location-1)]
       if(i < N){
@@ -1605,8 +1671,8 @@ sample_from_node_relocation <- function(prec_orig, location,
       nonparents_iminus1 <- which(!(1:N %in% c(allparents_iminus1, new_node)))
       bannedrow_i <- 1
       bannedrow_iminus1 <- 1
-      bannedvalues_i <- which(allparents_i %in% prec_new[1:(i-1)])
-      bannedvalues_iminus1 <- which(allparents_iminus1 %in% prec_new[1:(i-2)])
+      bannedvalues_i <- which(pos_new[allparents_i] < i)
+      bannedvalues_iminus1 <- which(pos_new[allparents_iminus1] < i-1)
       if(length(bannedvalues_i)>0 & !is.na(bannedvalues_i[1])){
         bannedrow_i <- map_pars$maps[[relocated_node]]$backwards[sum(2^bannedvalues_i)/2+1]
       }
@@ -1621,18 +1687,19 @@ sample_from_node_relocation <- function(prec_orig, location,
         allowedcol_i <- integer(0)
         allowedcol_iminus1 <- integer(0)
         if(i < N){
-          allowedcol_i <- which(nonparents_i %in% prec_new[(i+1):N])
+          allowedcol_i <- which(pos_new[nonparents_i] > i)
           if(i < N-1){
-            allowedcol_iminus1 <- which(nonparents_iminus1 %in% prec_new[i:N])
+            allowedcol_iminus1 <- which(pos_new[nonparents_iminus1] >= i)
           }
         }
-        allowedcol_iminus1 <- which(nonparents_iminus1 %in% prec_new[i:N])
+        allowedcol_iminus1 <- which(pos_new[nonparents_iminus1] >= i)
         score_mat[i, i] <- logSumExp(
           space_banned_plus_list[[relocated_node]][bannedrow_i, c(1, allowedcol_i+1)])
         score_mat[i, i-1] <- logSumExp(
           space_banned_plus_list[[new_node]][bannedrow_iminus1, c(1, allowedcol_iminus1+1)])
         
       }
+      pos_chosen[[i]] <- pos_new
     }
   }
   score_vec <- rowsums(score_mat)
@@ -1653,7 +1720,7 @@ sample_from_node_relocation <- function(prec_orig, location,
     prec_new[(new_spot+1):location] <- prec_orig[new_spot:(location-1)]
   }
   return(list(order=prec_new, score=score_mat[new_spot,],
-              relocated_node=relocated_node, new_spot=new_spot))
+              relocated_node=relocated_node, new_spot=new_spot, pos=pos_chosen[[new_spot]]))
 }
 
 
@@ -1698,13 +1765,19 @@ calculate_order_score <- function(banned_pars,space_banned_score_list,
 #' @param old_map           the previously-computed banned_parents_mapping()
 #'                          output to update incrementally. Required whenever
 #'                          `updatenodes` is supplied.
+#' @param pos               positional placements for order lookups
 banned_parents_mapping <- function(map_pars, prec, create_plus_sets=FALSE,
                                    create_minus_sets=FALSE,
-                                   updatenodes=NULL, old_map=NULL){
+                                   updatenodes=NULL, old_map=NULL, pos=NULL){
   N <- length(map_pars$par_names)
   
   full_recompute <- is.null(updatenodes) || is.null(old_map)
   if(full_recompute) updatenodes <- 1:N
+  
+  if(is.null(pos)){
+    pos <- integer(N)
+    pos[prec] <- seq_along(prec)
+  }
   
   # seed containers: reuse `old_map` for incremental updates, fresh otherwise
   if(!full_recompute){
@@ -1721,7 +1794,7 @@ banned_parents_mapping <- function(map_pars, prec, create_plus_sets=FALSE,
   
   for(i in updatenodes){
     # find where the current node is in the order
-    index_i <- which(prec==i)
+    index_i <- pos[i]
     # find the banned parent sets 
     # (a.k.a, nodes listed after the current node for each order)
     all_parents <- map_pars$par_names[[i]]
@@ -1729,10 +1802,10 @@ banned_parents_mapping <- function(map_pars, prec, create_plus_sets=FALSE,
     banned_par_idx <- integer(0)
     allowed_nonpar_idx <- integer(0)
     if(index_i != 1){
-      banned_par_idx <- which(all_parents %in% prec[1:(index_i-1)])
+      banned_par_idx <- which(pos[all_parents] < index_i)
     }
     if(index_i != N){
-      allowed_nonpar_idx <- which(non_parents %in% prec[(index_i+1):N])
+      allowed_nonpar_idx <- which(pos[non_parents] > index_i)
     }
     allowed_nonpar[[i]] <- allowed_nonpar_idx
     
@@ -1885,11 +1958,33 @@ sample_plus_graph <- function(score_plus_list, prec, map_pars,
   return(G)
 }
 
-plus_parents_mapping <- function(H, plus_amt, map_pars, blacklist=NULL){
+#' @param H          current search space
+#' @param plus_amt   max number of "+1" edges to consider adding
+#' @param map_pars   current parent-set mapping (parents_mapping() output)
+#' @param blacklist  optional per-node blacklist of forbidden non-parent additions
+#' @param updatenodes NULL (default) => full recompute for all N nodes, identical
+#'                    to the original behaviour. Otherwise, only these node ids
+#'                    are recomputed; everything else is copied from `old_map`.
+#' @param old_map    the previously-computed plus_parents_mapping() output to
+#'                    update incrementally. Required whenever `updatenodes` is
+#'                    supplied.
+plus_parents_mapping <- function(H, plus_amt, map_pars, blacklist=NULL,
+                                 updatenodes=NULL, old_map=NULL){
   N <- ncol(H)
-  plus_list <- vector(mode="list", length=N)
-  numpars_list <- vector(mode="list", length=N)
-  for(i in 1:N){
+  
+  full_recompute <- is.null(updatenodes) || is.null(old_map)
+  if(full_recompute) updatenodes <- 1:N
+  
+  if(!full_recompute){
+    plus_list <- old_map$par_pset
+    numpars_list <- old_map$numpars_vec
+  } 
+  else {
+    plus_list <- vector(mode="list", length=N)
+    numpars_list <- vector(mode="list", length=N)
+  }
+  
+  for(i in updatenodes){
     outside_set <- setdiff(1:N, c(i, map_pars$par_names[[i]]))
     if(!is.null(blacklist)){
       outside_set <- setdiff(outside_set, blacklist[[i]])
@@ -1975,7 +2070,6 @@ calculate_log_birth_rate <- function(H, banned_plus_list, sparsity, has_order=FA
       N_plus_sets <- ncol(banned_plus_list[[i]])
       if(has_order){
         tot_scores <- banned_plus_list[[i]][banned_map_pars$banned_row[i],]
-        index_i <- which(prec==i)
         allowed_indices <- banned_map_pars$allowed_nonpar_idx[[i]]
         tot_scores_new <- tot_scores[-1]
         tot_scores_orig <- tot_scores[1]
