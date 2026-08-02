@@ -31,6 +31,8 @@ library(matrixStats)
 #' @param score_type Either "bge" score (Heckerman and Geiger, 1995), or "dag-wishart" score (Ben-David et al, 2015)
 #' @param rounded If birth and death rates are rounded at 1, as is done in Mohammadi and Wit (2015)
 #' @param max_change Maximum number of edges to add/remove in a single expansion/contraction
+#' @param update_order_with_space In the classic mixture kernel method, either the space or order is updated.
+#'                                However, we give the user the option to update the order with any space update.
 #' @param save_all_weights If TRUE, saves all birth-death weights, or just the subset for the thinned samples
 #' @param sparse If TRUE, uses the Matrix::Matrix(sparse=TRUE) type matrices, or standard R matrices in saved output
 #' @param verbose Outputs progress as the Markov Chain progresses
@@ -39,7 +41,7 @@ graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1,
                        iter=25000, warm_up=NULL, max_sparsity=18, blacklist=NULL, 
                        thinning=250, move_type="relocate", sample_parameters=FALSE,
                        plus1=FALSE, score_type="bge", rounded=FALSE, max_change=1,
-                       save_all_weights=TRUE, sparse=TRUE, verbose=TRUE) {
+                       update_order_with_space=FALSE, save_all_weights=TRUE, sparse=TRUE, verbose=TRUE) {
   
   if(!(score_type %in% c("bge", "dag_wishart"))) stop("Please use a valid score function: 'bge' or 'dag_wishart' ")
   
@@ -60,6 +62,10 @@ graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1,
   pos_b <- 1:N   # prec_b starts as the identity, so pos_b == prec_b at t=0
   K_b <- round(sqrt(N/2))
   H_b <- H_0
+  
+  birth_rate_matrix_b <- NULL   # NULL => first use triggers a full recompute
+  death_rate_matrix_b <- NULL
+  rate_update_nodes_b <- NULL
   
   # Initial Mappings
   mappings <- parents_mapping(H_0)
@@ -106,11 +112,18 @@ graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1,
                               order_score, param, pos_b, c_star, space_move_prob, 
                               score_type, sample_parameters, rounded, max_change, 
                               thresh, move_type, warm_up, max_sparsity, plus1, 
-                              blacklist, save_curr_weight, verbose=FALSE)
+                              blacklist, birth_rate_matrix=birth_rate_matrix_b,
+                              death_rate_matrix=death_rate_matrix_b,
+                              rate_update_nodes=rate_update_nodes_b,
+                              update_order_with_space=update_order_with_space,
+                              save_curr_weight, verbose=FALSE)
     
     # Update state
     prec_b <- step$prec_t_plus1
     pos_b <- step$pos_t_plus1
+    birth_rate_matrix_b <- step$birth_rate_matrix
+    death_rate_matrix_b <- step$death_rate_matrix
+    rate_update_nodes_b <- step$rate_update_nodes
     K_b <- step$K_t_plus1
     banned_scores <- step$banned_scores
     full_scores <- step$order_scores
@@ -198,6 +211,10 @@ graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1,
 #' @param max_sparsity limit on the number of parents a node can have
 #' @param plus1 indicates whether plus score or standard score is used
 #' @param blacklist list of any parent structures that are not allowed
+#' @param birth_rate_matrix matrix of birth rates
+#' @param death_rate_matrix matrix of death rates
+#' @param rate_update_nodes nodes whose birth and death rates need to be updated
+#' @param update_order_with_space indicates whether to update the order with a space update
 #' @param save_waiting_times whether to save the waiting times for each step
 #' @param verbose prints the step in the chain number if TRUE, and when shrinking/expanding occurs
 mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand, 
@@ -208,7 +225,9 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
                               param, pos_t, c_star, prob_adapt, score_type,
                               to_sample_params, rounded, max_change, thresh, 
                               move_probs, warm_up, max_sparsity, plus1, 
-                              blacklist, save_waiting_times, verbose){
+                              blacklist, birth_rate_matrix=NULL, death_rate_matrix=NULL,
+                              rate_update_nodes=NULL, update_order_with_space=TRUE, 
+                              save_waiting_times, verbose){
   N <- nrow(H_t)
   l <- 1
   
@@ -224,15 +243,26 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
   is_contraction <- F
   is_expansion <- F
   
+  rate_update_nodes_next <- rate_update_nodes
+  if(is.null(rate_update_nodes_next)) rate_update_nodes_next <- integer(0)
+  birth_rate_matrix_out <- birth_rate_matrix
+  death_rate_matrix_out <- death_rate_matrix
+  
   if(is_adaption | save_waiting_times){
     birth_rates <- calculate_log_birth_rate(H_t, plus_banned_list, max_sparsity,
-                                            TRUE, prec_t, plus_pars, banned_pars, rounded)
+                                            TRUE, prec_t, plus_pars, banned_pars, rounded,
+                                            updatenodes = rate_update_nodes, 
+                                            old_matrix = birth_rate_matrix)
     death_rates<- calculate_log_death_rate(H_t, full_score_list, map_pars,
                                            space_banned_score_list, TRUE, prec_t, banned_pars,
-                                           c_star, rounded)
+                                           c_star, rounded, updatenodes = rate_update_nodes, 
+                                           old_matrix = death_rate_matrix)
     logsum_br <- logSumExp(birth_rates)
     logsum_dr <- logSumExp(death_rates)
     w_t <- -logSumExp(c(logsum_br, logsum_dr))
+    rate_update_nodes_next <- integer(0)   # fully fresh as of prec_t/H_t now
+    birth_rate_matrix_out <- birth_rates
+    death_rate_matrix_out <- death_rates
   }
   
   type_of_update <- "displacement"
@@ -388,11 +418,14 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
                                                        proposed_banned_plus_scores,
                                                        max_sparsity, TRUE, prec_t,
                                                        proposed_plus_mappings,
-                                                       proposed_banned_mappings)
+                                                       proposed_banned_mappings,
+                                                       updatenodes = update_nodes,
+                                                       old_matrix = birth_rates)
       death_rates_proposed <- calculate_log_death_rate(H_proposal, proposed_full_scores, 
                                                        proposed_mappings, proposed_banned_scores,
                                                        TRUE, prec_t, proposed_banned_mappings,
-                                                       c_star)
+                                                       c_star, updatenodes = update_nodes,
+                                                       old_matrix = death_rates)
       
       w_proposed <- -logSumExp(c(logSumExp(birth_rates_proposed),logSumExp(death_rates_proposed)))
       r_t <- w_proposed-w_t
@@ -444,59 +477,77 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
       w_t_plus1 <- w_t
       type_of_update <- "rejection"
     }
-    #sample new order
-    if(!plus1){
-      update_order_obj <- implement_order(prec_t, move_type,
-                                          new_banned_scores, new_mappings,
-                                          new_banned_mappings, new_order_score, H=H_t_plus1,
-                                          pos_t=pos_t)
-      prec_prime <- update_order_obj$order
-      order_score_prime <- update_order_obj$score 
-      if(move_type != "node relocation"){
-        prec_t_plus1 <- sample_from_2_orders(prec_t, prec_prime, 
-                                             new_banned_scores, new_mappings)
-        if(sum(prec_t_plus1!=prec_t)>0){
+    if(update_order_with_space){
+      #sample new order
+      if(!plus1){
+        update_order_obj <- implement_order(prec_t, move_type,
+                                            new_banned_scores, new_mappings,
+                                            new_banned_mappings, new_order_score, H=H_t_plus1,
+                                            pos_t=pos_t)
+        prec_prime <- update_order_obj$order
+        order_score_prime <- update_order_obj$score 
+        if(move_type != "node relocation"){
+          prec_t_plus1 <- sample_from_2_orders(prec_t, prec_prime, 
+                                               new_banned_scores, new_mappings)
+          if(sum(prec_t_plus1!=prec_t)>0){
+            order_score <- order_score_prime
+            pos_t_plus1 <- update_order_obj$pos
+          } 
+          else {
+            pos_t_plus1 <- pos_t
+          }
+        }
+        else{
+          prec_t_plus1 <- prec_prime
           order_score <- order_score_prime
           pos_t_plus1 <- update_order_obj$pos
-        } 
-        else {
-          pos_t_plus1 <- pos_t
         }
       }
       else{
-        prec_t_plus1 <- prec_prime
-        order_score <- order_score_prime
-        pos_t_plus1 <- update_order_obj$pos
-      }
-    }
-    else{
-      update_order_obj <- implement_order(prec_t, move_type,
-                                          new_banned_scores, new_mappings,
-                                          new_banned_mappings, new_order_score,
-                                          TRUE, new_banned_plus_scores, H_t_plus1,
-                                          pos_t=pos_t)
-      prec_prime <- update_order_obj$order
-      order_score_prime <- update_order_obj$score
-      if(move_type != "node relocation"){
-        prec_t_plus1 <- sample_from_2_orders(prec_t, prec_prime, 
-                                             new_banned_scores, new_mappings, TRUE, 
-                                             new_banned_plus_scores)
-        if(sum(prec_t_plus1!=prec_t)>0){
+        update_order_obj <- implement_order(prec_t, move_type,
+                                            new_banned_scores, new_mappings,
+                                            new_banned_mappings, new_order_score,
+                                            TRUE, new_banned_plus_scores, H_t_plus1,
+                                            pos_t=pos_t)
+        prec_prime <- update_order_obj$order
+        order_score_prime <- update_order_obj$score
+        if(move_type != "node relocation"){
+          prec_t_plus1 <- sample_from_2_orders(prec_t, prec_prime, 
+                                               new_banned_scores, new_mappings, TRUE, 
+                                               new_banned_plus_scores)
+          if(sum(prec_t_plus1!=prec_t)>0){
+            order_score <- order_score_prime
+            pos_t_plus1 <- update_order_obj$pos
+          } 
+          else {
+            pos_t_plus1 <- pos_t
+          }
+        }
+        else{
+          prec_t_plus1 <- prec_prime
           order_score <- order_score_prime
           pos_t_plus1 <- update_order_obj$pos
-        } 
-        else {
-          pos_t_plus1 <- pos_t
         }
+        
       }
-      else{
-        prec_t_plus1 <- prec_prime
-        order_score <- order_score_prime
-        pos_t_plus1 <- update_order_obj$pos
+      if(sum(prec_t_plus1 != prec_t) > 0){
+        rate_update_nodes_next <- unique(c(rate_update_nodes_next, update_order_obj$affected_nodes))
       }
       
+      banned_pars <- banned_parents_mapping(new_mappings, prec_t_plus1, TRUE, TRUE, pos=pos_t_plus1)
     }
-    banned_pars <- banned_parents_mapping(new_mappings, prec_t_plus1, TRUE, TRUE, pos=pos_t_plus1)
+    else{
+      # Pure Algorithm 1 (paper): Q_1 (the space transition) does not update
+      # the order -- prec_{t+1} = prec_t identically, so no order-based rebuild is needed here.
+      prec_t_plus1 <- prec_t
+      pos_t_plus1 <- pos_t
+      order_score <- new_order_score
+      banned_pars <- new_banned_mappings
+    }
+    if(to_update){
+      rate_update_nodes_next <- unique(c(rate_update_nodes_next, update_nodes))
+    }
+    
     if(plus1){
       graph_t_plus1 <- sample_graph(new_full_scores, prec_t_plus1, new_mappings, 
                                     banned_pars, plus_1 = TRUE, new_plus_scores,
@@ -565,6 +616,7 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
       }
     }
     if(sum(prec_t_plus1 != prec_t)> 0){
+      rate_update_nodes_next <- unique(c(rate_update_nodes_next, update_order_obj$affected_nodes))
       
       if(move_type != "node relocation"){
         banned_pars <- update_order_obj$banned_pars
@@ -624,7 +676,10 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
                       banned_par_mappings = banned_pars,
                       plus_par_mappings = new_plus_mappings,
                       update_type = type_of_update,
-                      pos_t_plus1 = pos_t_plus1)
+                      pos_t_plus1 = pos_t_plus1,
+                      birth_rate_matrix = birth_rate_matrix_out,
+                      death_rate_matrix = death_rate_matrix_out,
+                      rate_update_nodes = rate_update_nodes_next)
   
   if(save_waiting_times){
     output_list$weight <- w_t_plus1
@@ -1454,11 +1509,11 @@ implement_order <- function(prec_t, move_type,
     pos_tplus1 <- pos_t
     pos_tplus1[moved_ids] <- rev(changed_nodes)
     
-    update_nodes <- nodes_affected_by_order_move(moved_ids, H)
+    update_nodes <- nodes_affected_by_relocation(prec_t, changed_nodes[1], changed_nodes[2])
     
     banned_pars_new <- banned_parents_mapping(map_pars, prec_tplus1,
-                                              create_plus_sets = plus_1,
-                                              create_minus_sets = FALSE,
+                                              create_plus_sets = TRUE,
+                                              create_minus_sets = TRUE,
                                               updatenodes = update_nodes,
                                               old_map = banned_pars,
                                               pos = pos_tplus1)
@@ -1466,7 +1521,10 @@ implement_order <- function(prec_t, move_type,
     curr_score <- calculate_order_score(banned_pars_new, space_banned_score_list, plus_1,
                                         space_banned_plus_list)
     
-    return(list(order=prec_tplus1, score=curr_score, banned_pars=banned_pars_new, pos=pos_tplus1))
+    curr_score <- curr_score[prec_tplus1]
+    
+    return(list(order=prec_tplus1, score=curr_score, banned_pars=banned_pars_new, pos=pos_tplus1,
+                affected_nodes=update_nodes))
   }
   
   if(move_type=="node relocation"){
@@ -1718,8 +1776,10 @@ sample_from_node_relocation <- function(prec_orig, location,
   
   pos_final <- integer(N)
   pos_final[prec_new] <- seq_along(prec_new)
+  affected_nodes <- nodes_affected_by_relocation(prec_orig, location, new_spot)
   return(list(order=prec_new, score=score_mat[new_spot,],
-              relocated_node=relocated_node, new_spot=new_spot, pos=pos_final))
+              relocated_node=relocated_node, new_spot=new_spot, pos=pos_final,
+              affected_nodes=affected_nodes))
 }
 
 
@@ -2057,14 +2117,34 @@ shrink_search_space <- function(H, edges){
 
 calculate_log_birth_rate <- function(H, banned_plus_list, sparsity, has_order=FALSE, 
                                      prec=NULL, plus_map_pars=NULL, banned_map_pars=NULL,
-                                     rounded=FALSE){
+                                     rounded=FALSE, updatenodes=NULL, old_matrix=NULL){
   N <- length(banned_plus_list)
-  outside_matrix <- 1-H-diag(N)
-  update_matrix <- outside_matrix
-  update_matrix[outside_matrix==0] <- -1e12
+  full_recompute <- is.null(updatenodes) || is.null(old_matrix)
+  if(full_recompute) updatenodes <- 1:N
+  
+  if(full_recompute){
+    outside_matrix <- 1-H-diag(N)
+    update_matrix <- outside_matrix
+    update_matrix[outside_matrix==0] <- -1e12
+  } else {
+    update_matrix <- old_matrix
+  }
+  
   curr_setsize <- rowsums(H)
   birth_allowed <- curr_setsize < sparsity
-  for(i in 1:N){
+  for(i in updatenodes){
+    if(full_recompute){
+      outside_row <- outside_matrix[i,]
+    } else {
+      # per-row, on demand -- avoids ever building the full N x N outside_matrix
+      # when only a handful of rows actually need refreshing
+      outside_row <- 1 - H[i,]
+      outside_row[i] <- 0
+      # row i's stale entries (from whenever old_matrix was last computed) need
+      # clearing before writing the fresh values in; H[i,] may have changed since then 
+      update_matrix[i, ] <- -1e12
+    }
+    
     if(birth_allowed[i]){
       N_plus_sets <- ncol(banned_plus_list[[i]])
       if(has_order){
@@ -2094,10 +2174,10 @@ calculate_log_birth_rate <- function(H, banned_plus_list, sparsity, has_order=FA
       if(rounded){
         B_e <- ifelse(B_e>0, 0, B_e)
       }
-      update_matrix[i,which(outside_matrix[i,]==1)] <- B_e
+      update_matrix[i,which(outside_row==1)] <- B_e
     }
     else{
-      update_matrix[i, which(outside_matrix[i,]==1)] <- -1e12
+      update_matrix[i, which(outside_row==1)] <- -1e12
     }
   }
   return(update_matrix)
@@ -2105,15 +2185,24 @@ calculate_log_birth_rate <- function(H, banned_plus_list, sparsity, has_order=FA
 
 calculate_log_death_rate <- function(H, score_list, map_pars, banned_score_list,
                                      has_order=FALSE, prec=NULL, banned_map_pars=NULL,
-                                     c_star = 1, rounded=FALSE){
+                                     c_star = 1, rounded=FALSE, updatenodes=NULL, old_matrix=NULL){
   if(has_order & length(banned_map_pars$banned_minus_rows)==0){
     banned_map_pars <- banned_parents_mapping(map_pars, prec, create_minus_sets=TRUE)
   }
   
   N <- nrow(H)
-  update_matrix <- H
-  update_matrix[H==0] <- -1e12
-  for(i in 1:N){
+  full_recompute <- is.null(updatenodes) || is.null(old_matrix)
+  if(full_recompute) updatenodes <- 1:N
+  
+  if(full_recompute){
+    update_matrix <- H
+    update_matrix[H==0] <- -1e12
+  }
+  else {
+    update_matrix <- old_matrix
+  }
+  
+  for(i in updatenodes){
     if(has_order){
       n_parents <- length(map_pars$par_names[[i]])
       tot_scores <- banned_score_list[[i]][banned_map_pars$banned_minus_rows[[i]],1]
@@ -2137,6 +2226,11 @@ calculate_log_death_rate <- function(H, score_list, map_pars, banned_score_list,
     D_e <- as.numeric(c_adjust+tot_scores - orig_score)
     if(rounded){
       D_e <- ifelse(D_e>0, 0, D_e) 
+    }
+    if(!full_recompute){
+      # row i's stale entries (from whenever old_matrix was last computed) need
+      # clearing before writing the fresh D_e values in; H[i,] may have changed since then
+      update_matrix[i, ] <- -1e12
     }
     update_matrix[i, as.numeric(which(H[i,]==1))] <- D_e
   }
