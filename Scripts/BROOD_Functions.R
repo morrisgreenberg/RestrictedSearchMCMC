@@ -1589,8 +1589,6 @@ sample_from_node_relocation <- function(prec_orig, location,
   # pos_new is maintained incrementally alongside score_mat: at each sweep step,
   # relocated_node and new_node simply swap positions relative to the previous.
   pos_new <- pos_orig
-  pos_chosen <- vector(mode="list", length=N)
-  pos_chosen[[location]] <- pos_orig
   
   if(location > 1){
     for(i in (location-1):1){
@@ -1644,7 +1642,6 @@ sample_from_node_relocation <- function(prec_orig, location,
         score_mat[i, i+1] <- logSumExp(
           space_banned_plus_list[[new_node]][bannedrow_iplus1, c(1, allowedcol_iplus1+1)])
       }
-      pos_chosen[[i]] <- pos_new
     }
     
   }
@@ -1699,7 +1696,6 @@ sample_from_node_relocation <- function(prec_orig, location,
           space_banned_plus_list[[new_node]][bannedrow_iminus1, c(1, allowedcol_iminus1+1)])
         
       }
-      pos_chosen[[i]] <- pos_new
     }
   }
   score_vec <- rowsums(score_mat)
@@ -1719,8 +1715,11 @@ sample_from_node_relocation <- function(prec_orig, location,
     prec_new[new_spot] <- relocated_node
     prec_new[(new_spot+1):location] <- prec_orig[new_spot:(location-1)]
   }
+  
+  pos_final <- integer(N)
+  pos_final[prec_new] <- seq_along(prec_new)
   return(list(order=prec_new, score=score_mat[new_spot,],
-              relocated_node=relocated_node, new_spot=new_spot, pos=pos_chosen[[new_spot]]))
+              relocated_node=relocated_node, new_spot=new_spot, pos=pos_final))
 }
 
 
