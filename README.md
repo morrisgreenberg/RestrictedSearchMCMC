@@ -4,11 +4,13 @@ Implementation of our Restricted Search MCMC methods for graph inference, Birth-
 
 ## Standard Usage (Local R Session)
 
-Most simply, to run BROOD for a specific graph problem, you should call the `graph_mcmc()` function in `./Scripts/BROOD_Functions.R`. Please first source the script to load all helper functions into R, and ensure you have the following package dependencies installed: `Matrix`, `gtools`, `Rfast`, `BiDAG`.
+Most simply, to run BROOD for a specific graph problem, you should call the `graph_mcmc()` function in `./Scripts/BROOD_Functions.R`. Please first source the script to load all helper functions into R, and ensure you have the following package dependencies installed: `Matrix`, `gtools`, `Rfast`, `BiDAG`, `Rcpp` and `RcppArmadillo`. A working C++ compiler is also required, since `BROOD_Functions.R` compiles a small Rcpp routine (`Scripts/score_table.cpp`) on load for the BGe scoring path.
 
 ```R
 source("./Scripts/BROOD_Functions.R")
 ```
+
+**Note**: `score_table.cpp` must be present in `Scripts/`, alongside `BROOD_Functions.R`, and this script assumes it is being sourced with the repository root as the working directory (matching the usage shown above).
 
 By default, BROOD uses BGe scoring (Heckerman and Geiger, 1995) as natively provided in `BiDAG`. To perform DAG-Wishart (Ben-David et al, 2015) scoring, please source the data generation script as well:
 
