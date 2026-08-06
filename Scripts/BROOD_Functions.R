@@ -3,6 +3,12 @@ library(gtools)
 library(Rfast)
 library(BiDAG)
 library(matrixStats)
+library(Rcpp)
+library(RcppArmadillo)
+# Compiles build_plus_score_table_cpp(). Path is relative to the Scripts/
+# directory this file lives in, matching source("./Scripts/BROOD_Functions.R")
+# run from the repo root.
+Rcpp::sourceCpp("Scripts/score_table.cpp")
 
 # ==============================================================================
 # 1. MAIN WRAPPER: graph_mcmc
@@ -16,6 +22,7 @@ library(matrixStats)
 #' @param thresh threshold to add edges to the space from the d samples
 #' @param c_star scaling constant for death rates (smaller means more inclusive search space)
 #' @param space_move_prob Probability of attempting a search space expansion/contraction.
+#' @param temper temperature to apply to the posterior (and birth/death rates)
 #' @param iter number of steps of the chain
 #' @param warm_up amount of steps before adaptation starts (defaults to 10*N)
 #' @param max_sparsity limit on the number of parents a node can have
@@ -37,7 +44,7 @@ library(matrixStats)
 #' @param sparse If TRUE, uses the Matrix::Matrix(sparse=TRUE) type matrices, or standard R matrices in saved output
 #' @param verbose Outputs progress as the Markov Chain progresses
 graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1, 
-                       thresh=1e-9, c_star=1, space_move_prob=0.1,
+                       thresh=1e-9, c_star=1, space_move_prob=0.1, temper=1,
                        iter=25000, warm_up=NULL, max_sparsity=18, blacklist=NULL, 
                        thinning=250, move_type="relocate", sample_parameters=FALSE,
                        plus1=FALSE, score_type="bge", rounded=FALSE, max_change=1,
@@ -109,7 +116,7 @@ graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1,
     step <- mcmc_sampler_step(prec_b, H_b, K_b, b, d_expand, d_shrink, 
                               banned_scores, mappings, banned_mappings, plus_mappings, 
                               full_scores, banned_plus_scores, full_plus_scores, 
-                              order_score, param, pos_b, c_star, space_move_prob, 
+                              order_score, param, pos_b, c_star, space_move_prob, temper,
                               score_type, sample_parameters, rounded, max_change, 
                               thresh, move_type, warm_up, max_sparsity, plus1, 
                               blacklist, birth_rate_matrix=birth_rate_matrix_b,
@@ -200,6 +207,7 @@ graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1,
 #' @param pos_t positioning parameter for order lookups
 #' @param c_star scaling constant to offset death rates if wanting a larger search space
 #' @param prob_adapt probability of transitioning to another space
+#' @param temper temperature applied to posterior (and birth/death rates)
 #' @param thresh threshold to add edges to the space from the d samples
 #' @param move_probs how to propose move types. Three current methods:
 #                          a. relocate - always performs node relocation
@@ -221,8 +229,8 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
                               d_shrink, space_banned_score_list, 
                               map_pars, banned_pars, plus_pars,
                               full_score_list, plus_banned_list, 
-                              plus_score_list, order_score,
-                              param, pos_t, c_star, prob_adapt, score_type,
+                              plus_score_list, order_score, param, pos_t, 
+                              c_star, prob_adapt, temper, score_type,
                               to_sample_params, rounded, max_change, thresh, 
                               move_probs, warm_up, max_sparsity, plus1, 
                               blacklist, birth_rate_matrix=NULL, death_rate_matrix=NULL,
@@ -240,7 +248,6 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
   if(t>warm_up){
     is_adaption <- sample(c(T, F), 1, prob=c(prob_adapt, 1-prob_adapt))
   }
-  is_contraction <- F
   is_expansion <- F
   
   rate_update_nodes_next <- rate_update_nodes
@@ -252,11 +259,11 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
     birth_rates <- calculate_log_birth_rate(H_t, plus_banned_list, max_sparsity,
                                             TRUE, prec_t, plus_pars, banned_pars, rounded,
                                             updatenodes = rate_update_nodes, 
-                                            old_matrix = birth_rate_matrix)
+                                            old_matrix = birth_rate_matrix, temp=temper)
     death_rates<- calculate_log_death_rate(H_t, full_score_list, map_pars,
                                            space_banned_score_list, TRUE, prec_t, banned_pars,
                                            c_star, rounded, updatenodes = rate_update_nodes, 
-                                           old_matrix = death_rate_matrix)
+                                           old_matrix = death_rate_matrix, temp=temper)
     logsum_br <- logSumExp(birth_rates)
     logsum_dr <- logSumExp(death_rates)
     w_t <- -logSumExp(c(logsum_br, logsum_dr))
@@ -274,9 +281,6 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
                       prob=exp(c(logsum_br+w_t, logsum_dr+w_t)))
     if(process=="Birth"){
       is_expansion <- T
-    }
-    else{
-      is_contraction <- T
     }
   }
   #sampling move type
@@ -420,12 +424,12 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand,
                                                        proposed_plus_mappings,
                                                        proposed_banned_mappings,
                                                        updatenodes = update_nodes,
-                                                       old_matrix = birth_rates)
+                                                       old_matrix = birth_rates, temp=temper)
       death_rates_proposed <- calculate_log_death_rate(H_proposal, proposed_full_scores, 
                                                        proposed_mappings, proposed_banned_scores,
                                                        TRUE, prec_t, proposed_banned_mappings,
                                                        c_star, updatenodes = update_nodes,
-                                                       old_matrix = death_rates)
+                                                       old_matrix = death_rates, temp=temper)
       
       w_proposed <- -logSumExp(c(logSumExp(birth_rates_proposed),logSumExp(death_rates_proposed)))
       r_t <- w_proposed-w_t
@@ -769,7 +773,6 @@ score_plus_space <- function(H, map_pars, plus_pars, param,
         combos <- map_pars$par_pset[[i]]
         par_vec <- map_pars$numpars_vec[[i]]
         plus_combos <- plus_pars$par_pset[[i]]
-        nonpar_vec <- plus_pars$numpars_vec[[i]]
         n_parent_sets <- nrow(combos)
         n_nonparent_sets <- nrow(plus_combos)
         if(n_nonparent_sets==1){
@@ -801,34 +804,19 @@ score_plus_space <- function(H, map_pars, plus_pars, param,
           space_scores[[i]] <- matrix(score_matr[,1], ncol=1)
         }
         else{
-          score_matr <- matrix(nrow=n_parent_sets, ncol=n_nonparent_sets)
-          for(k in 1:n_parent_sets){
-            if(k==1){
-              if(score_type == "bge"){
-                score_matr[k,] <- bge_score_plus_parent(i, NULL, plus_combos[-1,1], N, param)
-              }
-              else if(score_type == "dag_wishart"){
-                score_matr[k,] <- dagwishart_score_plus_parent(i, NULL, plus_combos[-1,1], N, 
-                                                               param)
-              }
-              else{
-                stop("Please use a valid score type: 'bge' or 'dag_wishart' ")
-              }
-            }
-            else{
-              if(score_type == "bge"){
-                score_matr[k,] <- bge_score_plus_parent(i, combos[k,1:c(par_vec[k])], 
-                                                        plus_combos[-1,1], N, param)
-              }
-              else if(score_type == "dag_wishart"){
-                score_matr[k,] <- dagwishart_score_plus_parent(i, combos[k,1:c(par_vec[k])], 
-                                                               plus_combos[-1,1], N, param)
-              }
-              else{
-                stop("Please use a valid score type: 'bge' or 'dag_wishart' ")
-              }
-            }
-            
+          if(score_type == "bge"){
+            score_matr <- build_plus_score_table_cpp(i, map_pars$par_names[[i]], plus_combos[-1,1],
+                                                     map_pars$maps[[i]]$backwards, param$TN,
+                                                     param$awpN, param$scoreconstvec)
+          }
+          else if(score_type == "dag_wishart"){
+            score_matr <- build_plus_score_table_dagwishart_cpp(i, map_pars$par_names[[i]], plus_combos[-1,1],
+                                                                map_pars$maps[[i]]$backwards, param$UN, param$U0,
+                                                                param$alpha_post[i], param$scoreconstlist,
+                                                                if(is.null(param$logedgepvec)) numeric(0) else param$logedgepvec)
+          }
+          else{
+            stop("Please use a valid score type: 'bge' or 'dag_wishart' ")
           }
           space_scores[[i]] <- matrix(score_matr[,1], ncol=1)
           score_list[[i]] <- score_matr
@@ -949,7 +937,6 @@ create_banned_plus_parent_table <- function(H, map_pars, plus_pars,
         
       }
       else{
-        N_outside <- length(plus_pars$par_pset[[i]][,1])
         N_pars <- length(map_pars$par_names[[i]])
         zeta_matr <- score_plus_list[[i]]
         N_scores <- nrow(zeta_matr)
@@ -1341,11 +1328,8 @@ dagwishart_score_plus_parent <- function(j, parentnodes, plus_parentnodes, N, pa
   U0 <- param$U0
   
   awpN_new <- param$alpha_post[j]
-  aw_new <- awpN_new-N
   
   scoreconstvec<-param$scoreconstlist
-  
-  logedgepvec <- param$logedgepvec
   
   lp<-length(parentnodes) #number of parents
   lpp <- length(plus_parentnodes)
@@ -2117,7 +2101,7 @@ shrink_search_space <- function(H, edges){
 
 calculate_log_birth_rate <- function(H, banned_plus_list, sparsity, has_order=FALSE, 
                                      prec=NULL, plus_map_pars=NULL, banned_map_pars=NULL,
-                                     rounded=FALSE, updatenodes=NULL, old_matrix=NULL){
+                                     rounded=FALSE, updatenodes=NULL, old_matrix=NULL, temp=1){
   N <- length(banned_plus_list)
   full_recompute <- is.null(updatenodes) || is.null(old_matrix)
   if(full_recompute) updatenodes <- 1:N
@@ -2146,7 +2130,6 @@ calculate_log_birth_rate <- function(H, banned_plus_list, sparsity, has_order=FA
     }
     
     if(birth_allowed[i]){
-      N_plus_sets <- ncol(banned_plus_list[[i]])
       if(has_order){
         tot_scores <- banned_plus_list[[i]][banned_map_pars$banned_row[i],]
         allowed_indices <- banned_map_pars$allowed_nonpar_idx[[i]]
@@ -2170,7 +2153,7 @@ calculate_log_birth_rate <- function(H, banned_plus_list, sparsity, has_order=FA
       tot_scores_matr[,1] <- tot_scores_new
       tot_scores_all <- rowLogSumExps(tot_scores_matr)
       
-      B_e <- as.numeric(-log(2) + tot_scores_all - tot_scores_orig)
+      B_e <- as.numeric(-log(2) + temp*(tot_scores_all - tot_scores_orig))
       if(rounded){
         B_e <- ifelse(B_e>0, 0, B_e)
       }
@@ -2185,7 +2168,8 @@ calculate_log_birth_rate <- function(H, banned_plus_list, sparsity, has_order=FA
 
 calculate_log_death_rate <- function(H, score_list, map_pars, banned_score_list,
                                      has_order=FALSE, prec=NULL, banned_map_pars=NULL,
-                                     c_star = 1, rounded=FALSE, updatenodes=NULL, old_matrix=NULL){
+                                     c_star = 1, rounded=FALSE, updatenodes=NULL, 
+                                     old_matrix=NULL, temp=1){
   if(has_order & length(banned_map_pars$banned_minus_rows)==0){
     banned_map_pars <- banned_parents_mapping(map_pars, prec, create_minus_sets=TRUE)
   }
@@ -2223,7 +2207,7 @@ calculate_log_death_rate <- function(H, score_list, map_pars, banned_score_list,
     # for numerical stability, we divide by the original score, or equivalent, 
     # subtract log original. This allows us to cancel out all terms for other nodes
     c_adjust <- log(2*c_star)
-    D_e <- as.numeric(c_adjust+tot_scores - orig_score)
+    D_e <- as.numeric(c_adjust+temp*(tot_scores - orig_score))
     if(rounded){
       D_e <- ifelse(D_e>0, 0, D_e) 
     }
