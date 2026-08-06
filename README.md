@@ -20,6 +20,102 @@ source("./Scripts/Data_Generation_Functions.R")
 
 **Note**: This allows a user to access `usrDAGcorescore` that points to our DAG-Wishart implementation, which overwrites the native `usrDAGcorescore` in the `BiDAG` R package (Suter and Kuipers). Its purpose is to act as a wrapper for creating the data structure used to perform restricted graph MCMC in `BiDAG` based on a user-specified scoring function.
 
+### Example for 50-node Graph Inference
+
+The example below illustrates how to run our work on a probabilistically generated graph via the Erdős–Rényi model with accompanying synthetic data generated from a Gaussian structural equation model. Please install `pcalg`, `Rfast`, and `yardstick` to generate the graph and see the AUC and F1 performance.
+
+```R
+library(pcalg)
+library(Rfast)
+library(yardstick)
+source("./Scripts/BROOD_Functions.R")
+source("./Scripts/Data_Generating_Functions.R")
+
+set.seed(123)
+N <- 50
+n_samples <- 100
+
+# ---- 1. Generate a random ground-truth DAG ----
+trueDAGedges_50 <- as(pcalg::randDAG(n = N, d = 4, wFUN = list(runif, min = 0.4, max = 2)), "matrix")
+
+# spectral_rescale() rescales edge weights so the resulting SEM has
+# a stable, well-conditioned covariance structure.
+trueDAGedges_curr_50 <- spectral_rescale(trueDAGedges_50)
+
+# ---- 2. Generate SEM data from the true DAG ----
+data_50 <- rmvDAG(trueDAGedges_curr_50, n_samples, standardise = FALSE)
+
+# ---- 3. Build the initial (restricted) search space via the PC algorithm ----
+pc_fit_50 <- pcalg::skeleton(suffStat = list(C = cor(data_50), n = nrow(data_50)),
+                             indepTest = pcalg::gaussCItest, alpha = 0.4,
+                             labels = paste0("V", 1:ncol(data_50)), method = "stable",
+                             m.max = 10)
+space_PC_50 <- 1 * as(pc_fit_50@graph, "matrix")
+
+# ---- 4. Get BGe score parameters ----
+score_par_sim_50 <- BiDAG::scoreparameters("bge", data_50)
+
+# ---- 5. Run BROOD ----
+
+# space_move_prob=0 means the search space doesn't adapt; equivalent to hybrid order MCMC
+no_adaptation_50 <- graph_mcmc(space_PC_50, score_par_sim_50, iter = 40000, space_move_prob=0,
+                               thinning=20, max_sparsity = 15, temper=0.05, verbose = TRUE)
+
+result_50 <- graph_mcmc(space_PC_50, score_par_sim_50, iter = 40000, space_move_prob=0.1,
+                        thinning=20, max_sparsity = 15, temper=0.05, verbose = TRUE)
+
+# ==============================================================================
+# Useful outputs
+# ==============================================================================
+
+# ---- Edge-probability metrics against the known ground truth ----
+trueDAG_50 <- (trueDAGedges_curr_50 > 0) * 1
+t_vec <- as.numeric(trueDAG_50)
+t_f <- factor(t_vec, levels = c(1, 0))
+
+probs_noadapt_50 <- t(as.matrix(Reduce('+', no_adaptation_50$graphs))) / length(no_adaptation_50$graphs)
+p_vec_noadapt <- as.numeric(probs_noadapt_50)
+p_f_noadapt <- factor(1 * (p_vec_noadapt > 0.5), levels = c(1, 0))
+
+probs_adapt_50 <- t(as.matrix(Reduce('+', result_50$graphs))) / length(result_50$graphs)
+p_vec_adapt <- as.numeric(probs_adapt_50)
+p_f_adapt <- factor(1 * (p_vec_adapt > 0.5), levels = c(1, 0))
+
+cat("AUC:            ", Rfast::auc(t_vec, p_vec_noadapt), "\n")
+cat("PR-AUC:         ", yardstick::pr_auc_vec(t_f, p_vec_noadapt), "\n")
+cat("F1:             ", yardstick::f_meas_vec(t_f, p_f_noadapt), "\n")
+cat("Mean true-edge probability: ", sum(p_vec_noadapt[t_vec == 1]) / max(1, sum(t_vec == 1)), "\n")
+cat("Mean false-edge probability:", sum(p_vec_noadapt[t_vec == 0]) / max(1, sum(t_vec == 0)), "\n")
+
+cat("AUC:            ", Rfast::auc(t_vec, p_vec_adapt), "\n")
+cat("PR-AUC:         ", yardstick::pr_auc_vec(t_f, p_vec_adapt), "\n")
+cat("F1:             ", yardstick::f_meas_vec(t_f, p_f_adapt), "\n")
+cat("Mean true-edge probability: ", sum(p_vec_adapt[t_vec == 1]) / max(1, sum(t_vec == 1)), "\n")
+cat("Mean false-edge probability:", sum(p_vec_adapt[t_vec == 0]) / max(1, sum(t_vec == 0)), "\n")
+
+
+# ---- Search space improvement ----
+# Starting search space compared to the true graph
+table(trueDAG_50, t(as.matrix(result_50$spaces[[1]])))
+
+# Updated search space by the end
+table(trueDAG_50, t(as.matrix(result_50$spaces[[length(result_50$spaces)]])))
+
+# ---- Search space size progression ----
+# |E_H| at each thinned snapshot -- shows how much the search space grew
+# beyond its PC-algorithm starting point over the course of the run.
+space_sizes <- sapply(result_50$spaces, function(H) sum(as.matrix(H)))
+iters_saved <- seq_along(space_sizes)  # one entry per thinned sample
+
+plot(iters_saved, space_sizes, type = "l", lwd = 2, col = "steelblue",
+     xlab = "Thinned sample index", ylab = expression("Search space size " * "|" * E[H] * "|"),
+     main = "BROOD search space size over the course of the run")
+abline(h = sum(space_PC_50), lty = 2, col = "grey40")
+legend("bottomright", legend = "PC-algorithm starting size", lty = 2, col = "grey40", bty = "n")
+
+```
+Using our birth-death-based space changes improves ROC AUC from `0.796618` to `0.962275` from just relying on the straight hybrid sampler.
+
 ## Large-Scale Simulation Pipeline (SLURM Cluster)
 
 We also provide a complete SLURM pipeline to execute the sampler on our simulation settings in the `./Scripts/Simulation_Pipeline` directory.
