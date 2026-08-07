@@ -796,10 +796,32 @@ score_plus_space <- function(H, map_pars, plus_pars, param,
           space_scores[[i]] <- matrix(score_matr[,1], ncol=1)
         }
         else{
-          if(score_type == "bge"){
+          newly_added <- if(has_plus_orig && !is.null(map_pars_orig)) setdiff(map_pars$par_names[[i]], map_pars_orig$par_names[[i]]) else integer(0)
+          if(score_type == "bge" && length(newly_added) == 1){
+            # single-edge birth: reuse the old table instead of rebuilding
+            # from scratch -- see conversation notes for the derivation.
+            score_matr <- extend_plus_score_table_cpp(i, map_pars_orig$par_names[[i]],
+                                                      plus_pars_orig$par_pset[[i]][-1,1],
+                                                      as.integer(newly_added), H_plus_scores[[i]],
+                                                      map_pars_orig$maps[[i]]$backwards,
+                                                      map_pars$par_names[[i]],
+                                                      map_pars$maps[[i]]$backwards, param$TN,
+                                                      param$awpN, param$scoreconstvec)
+          }
+          else if(score_type == "bge"){
             score_matr <- build_plus_score_table_cpp(i, map_pars$par_names[[i]], plus_combos[-1,1],
                                                      map_pars$maps[[i]]$backwards, param$TN,
                                                      param$awpN, param$scoreconstvec)
+          }
+          else if(score_type == "dag_wishart" && length(newly_added) == 1){
+            score_matr <- extend_plus_score_table_dagwishart_cpp(i, map_pars_orig$par_names[[i]],
+                                                                 plus_pars_orig$par_pset[[i]][-1,1],
+                                                                 as.integer(newly_added), H_plus_scores[[i]],
+                                                                 map_pars_orig$maps[[i]]$backwards,
+                                                                 map_pars$par_names[[i]],
+                                                                 map_pars$maps[[i]]$backwards, param$UN, param$U0,
+                                                                 param$alpha_post[i], param$scoreconstlist,
+                                                                 if(is.null(param$logedgepvec)) numeric(0) else param$logedgepvec)
           }
           else if(score_type == "dag_wishart"){
             score_matr <- build_plus_score_table_dagwishart_cpp(i, map_pars$par_names[[i]], plus_combos[-1,1],
@@ -1358,10 +1380,10 @@ dagwishart_score_plus_parent <- function(j, parentnodes, plus_parentnodes, N, pa
            logdetD0<-log(D0)
            B0<-U0_j_plus
            logdetpart2_0<-log(A0-B0^2/D0)
-           corescores <- scoreconstvec[[lp+2]][j]-(awpNd2_new+1/2)*logdetpart2 - logdetD/2 +
-             awpd2_new*logdetpart2_0 + logdetD0/2
+           corescores <- scoreconstvec[[lp+2]][j]-(awpNd2_new-1/2)*logdetpart2 - logdetD/2 +
+             (awpd2_new-1/2)*logdetpart2_0 + logdetD0/2
            if (!is.null(param$logedgepvec)) { # if there is an additional edge penalisation
-             corescores <- corescores + as.numeric(param$logedgepvec[lp+1])
+             corescores <- corescores + as.numeric(param$logedgepvec[lp+2])
            }
            corescore_vec[2:(lpp+1)] <- corescores
          },
@@ -1388,8 +1410,8 @@ dagwishart_score_plus_parent <- function(j, parentnodes, plus_parentnodes, N, pa
            logdetpart2_0_plus <- log((D0-B0^2/A0)*(U0_plus_diag-U0_j_plus^2/A0)-
                                        (U0_plus_off-U0_j_plus*B0/A0)^2)+log(A0)-logdetD0_plus
            
-           corescores <- scoreconstvec[[lp+2]][j]-(awpNd2_new+1/2)*logdetpart2_plus - logdetD_plus/2 +
-             awpd2_new*logdetpart2_0_plus + logdetD0_plus/2
+           corescores <- scoreconstvec[[lp+2]][j]-(awpNd2_new-1/2)*logdetpart2_plus - logdetD_plus/2 +
+             (awpd2_new-1/2)*logdetpart2_0_plus + logdetD0_plus/2
            if (!is.null(param$logedgepvec)) { # if there is an additional edge penalization
              penalty <- param$logedgepvec[lp+1]
              plus_penalties <- as.numeric(param$logedgepvec[lp+2])
@@ -1430,8 +1452,8 @@ dagwishart_score_plus_parent <- function(j, parentnodes, plus_parentnodes, N, pa
            logdetD0_plus <- logdetD0 + 2*log(choltemp0_new_22)
            logdetpart2_0_plus <- log(A0-sum(c_noplus0^2)-c_plusses0^2)
            
-           corescores <- scoreconstvec[[lp+2]][j]-(awpNd2_new+1/2)*logdetpart2_plus - logdetD_plus/2 +
-             awpd2_new*logdetpart2_0_plus + logdetD0_plus/2
+           corescores <- scoreconstvec[[lp+2]][j]-(awpNd2_new-1/2)*logdetpart2_plus - logdetD_plus/2 +
+             (awpd2_new-1/2)*logdetpart2_0_plus + logdetD0_plus/2
            if (!is.null(param$logedgepvec)) { # if there is an additional edge penalisation
              penalty <- sum(param$logedgepvec[lp+1])
              plus_penalties <- as.numeric(param$logedgepvec[lp+2])
