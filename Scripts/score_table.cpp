@@ -315,11 +315,12 @@ static void dagwishart_recurse(int depth, int K, std::vector<int>& included_loca
     if(lp==0){
       double sc1 = as<NumericVector>(scoreconstlist[0])[j0];
       double sc2 = as<NumericVector>(scoreconstlist[1])[j0];
-      // R's "0" branch applies NO penalty to the base score, and uses
-      // logedgepvec[lp+1] (not [lp+2]) for the +1-extension penalty --
-      // this differs from the "1"/"otherwise" branches' convention and is
-      // replicated exactly here, not "corrected".
-      double pen_base_lp0 = 0.0;
+      // R's "0" branch: base score uses logedgepvec[lp+1] (matching every
+      // other lp value's own convention), and the +1-extension ALSO uses
+      // logedgepvec[lp+1] specifically at lp=0 (not [lp+2], since there's
+      // no "smaller" state to shift from) -- both restored/fixed to match
+      // dagwishart_score_node's corrected lp=0 branch.
+      double pen_base_lp0 = has_penalty ? logedgepvec(lp) : 0.0;
       double pen_plus_lp0 = has_penalty ? logedgepvec(lp+1) : 0.0;
       row_scores = dagwishart_score_lp0(j0, plus0, UN, U0, A, A0, awpN_new, N, sc1, sc2,
                                         has_penalty, pen_base_lp0, pen_plus_lp0);

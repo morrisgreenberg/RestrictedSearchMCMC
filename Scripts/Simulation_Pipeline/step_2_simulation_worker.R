@@ -30,10 +30,20 @@ library(doParallel)
 library(igraph)
 library(yardstick)
 library(BDgraph)
+library(Rcpp)
+library(RcppArmadillo)
 
 # 3. Path Management
 
-# Set up local paths relative to the project root
+# BROOD_Functions.R compiles Scripts/score_table.cpp using a path relative
+# to the working directory (matching source("./Scripts/BROOD_Functions.R")
+# from the repo root). script_root is the Scripts/ folder
+# itself, so the repo root is one level up: please set that as the working
+# directory before sourcing, so the compile step can find the file
+# regardless of where this job's own working directory started out.
+repo_root <- dirname(script_root)
+setwd(repo_root)
+
 source(file.path(script_root, "BROOD_Functions.R"))
 source(file.path(script_root, "Data_Generation_Functions.R"))
 source(file.path(script_root, "Simulation_Pipeline", "step_3_simulation_loop.R"))
@@ -67,11 +77,21 @@ n_cores <- as.integer(Sys.getenv("SLURM_CPUS_PER_TASK", unset = 1))
 cl <- makeCluster(max(1, n_cores - 1), "PSOCK", outfile = debug_file)
 
 # Export variables and functions to the cluster
+# NOTE: clusterExport serializes R objects to each worker, which works for
+# ordinary R functions but NOT for compiled Rcpp functions (build_plus_
+# score_table_cpp etc.) -- these are external pointers into a shared
+# library loaded in THIS process's memory, and external pointers do not
+# survive serialization across processes. Each worker must independently
+# source BROOD_Functions.R so it compiles its own copy in its own process.
 clusterExport(cl, varlist=ls())
 clusterEvalQ(cl, {
   library(tidyverse); library(BiDAG); library(matrixStats); library(gtools)
   library(Rfast); library(pcalg); library(RBGL); library(pROC)
   library(igraph); library(yardstick); library(Matrix); library(BDgraph)
+  library(Rcpp); library(RcppArmadillo)
+  setwd(repo_root)
+  source(file.path(script_root, "BROOD_Functions.R"))
+  source(file.path(script_root, "Data_Generation_Functions.R"))											   
 })
 
 registerDoParallel(cl)

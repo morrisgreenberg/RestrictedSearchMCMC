@@ -1281,6 +1281,9 @@ dagwishart_score_node <- function(j,parentnodes,N,param){
   switch(as.character(lp),
          "0"={# just a single term if no parents
            corescore <- scoreconstvec[[lp+1]][j] -awpNd2_new*log(A)+awpd2_new*log(A0)
+           if (!is.null(param$logedgepvec)) {
+             corescore <- corescore + param$logedgepvec[lp+1]
+           }
          },
          
          "1"={# no need for matrices
@@ -1371,6 +1374,9 @@ dagwishart_score_plus_parent <- function(j, parentnodes, plus_parentnodes, N, pa
   switch(as.character(lp),
          "0"={# just a single term if no parents
            corescore_vec[1] <- scoreconstvec[[lp+1]][j] -awpNd2_new*log(A)+awpd2_new*log(A0)
+           if (!is.null(param$logedgepvec)) {
+             corescore_vec[1] <- corescore_vec[1] + param$logedgepvec[lp+1]
+           }
            D<-UN_plus_diag
            logdetD<-log(D)
            B<-UN_j_plus
