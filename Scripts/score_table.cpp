@@ -584,7 +584,7 @@ NumericMatrix extend_plus_score_table_cpp(int j, IntegerVector old_cand_nodes, I
   for(int k=0; k<Knew; k++) if(new_cand_nodes[k]-1 == e0) e_new_pos0 = k;
   std::vector<int> new_pos_of_old(K);
   for(int k=0; k<K; k++){
-    for(int m=0; m<Knew; m++) if(new_cand_nodes[m]-1 == old_cand0(k)){ new_pos_of_old[k] = m; break; }
+    for(int m=0; m<Knew; m++) if((arma::uword)(new_cand_nodes[m]-1) == old_cand0(k)){ new_pos_of_old[k] = m; break; }
   }
 
   long long n_new_rows = 1LL << Knew;
@@ -787,7 +787,7 @@ NumericMatrix extend_plus_score_table_dagwishart_cpp(int j, IntegerVector old_ca
   for(int k=0; k<Knew; k++) if(new_cand_nodes[k]-1 == e0) e_new_pos0 = k;
   std::vector<int> new_pos_of_old(K);
   for(int k=0; k<K; k++){
-    for(int m=0; m<Knew; m++) if(new_cand_nodes[m]-1 == old_cand0(k)){ new_pos_of_old[k] = m; break; }
+    for(int m=0; m<Knew; m++) if((arma::uword)(new_cand_nodes[m]-1) == old_cand0(k)){ new_pos_of_old[k] = m; break; }
   }
 
   long long n_new_rows = 1LL << Knew;
