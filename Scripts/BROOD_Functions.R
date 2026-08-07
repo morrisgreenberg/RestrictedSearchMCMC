@@ -17,9 +17,6 @@ Rcpp::sourceCpp("Scripts/score_table.cpp")
 #' @description Performs MCMC over both the order space and the search space (H).
 #' @param H_0 Initial adjacency matrix representing the starting search space.
 #' @param param Scoring parameters (BiDAG object).
-#' @param d_expand number of graphs to sample at expansion steps
-#' @param d_shrink number of graphs to sample at contraction steps
-#' @param thresh threshold to add edges to the space from the d samples
 #' @param c_star scaling constant for death rates (smaller means more inclusive search space)
 #' @param space_move_prob Probability of attempting a search space expansion/contraction.
 #' @param temper temperature to apply to the posterior (and birth/death rates)
@@ -43,8 +40,7 @@ Rcpp::sourceCpp("Scripts/score_table.cpp")
 #' @param save_all_weights If TRUE, saves all birth-death weights, or just the subset for the thinned samples
 #' @param sparse If TRUE, uses the Matrix::Matrix(sparse=TRUE) type matrices, or standard R matrices in saved output
 #' @param verbose Outputs progress as the Markov Chain progresses
-graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1, 
-                       thresh=1e-9, c_star=1, space_move_prob=0.1, temper=1,
+graph_mcmc <- function(H_0, param, c_star=1, space_move_prob=0.1, temper=1,
                        iter=25000, warm_up=NULL, max_sparsity=18, blacklist=NULL, 
                        thinning=250, move_type="relocate", sample_parameters=FALSE,
                        plus1=FALSE, score_type="bge", rounded=FALSE, max_change=1,
@@ -113,12 +109,12 @@ graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1,
     
     save_curr_weight <- save_all_weights || (b %in% thinned_samples)
     
-    step <- mcmc_sampler_step(prec_b, H_b, K_b, b, d_expand, d_shrink, 
-                              banned_scores, mappings, banned_mappings, plus_mappings, 
-                              full_scores, banned_plus_scores, full_plus_scores, 
-                              order_score, param, pos_b, c_star, space_move_prob, temper,
+    step <- mcmc_sampler_step(prec_b, H_b, K_b, b, banned_scores, mappings, 
+                              banned_mappings, plus_mappings, full_scores, 
+                              banned_plus_scores, full_plus_scores, order_score, 
+                              param, pos_b, c_star, space_move_prob, temper,
                               score_type, sample_parameters, rounded, max_change, 
-                              thresh, move_type, warm_up, max_sparsity, plus1, 
+                              move_type, warm_up, max_sparsity, plus1, 
                               blacklist, birth_rate_matrix=birth_rate_matrix_b,
                               death_rate_matrix=death_rate_matrix_b,
                               rate_update_nodes=rate_update_nodes_b,
@@ -195,8 +191,6 @@ graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1,
 #' @param H_t search space at step t
 #' @param K_t sparsity at step t (currently on hold)
 #' @param t step number in the chain
-#' @param d_expand number of graphs to draw at expansion
-#' @param d_shrink number of graphs to draw at shrink
 #' @param space_banned_score_list banned score list for scoring orders
 #' @param map_pars hash tables for order scoring
 #' @param full_score_list score lists for every valid parent set
@@ -208,7 +202,6 @@ graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1,
 #' @param c_star scaling constant to offset death rates if wanting a larger search space
 #' @param prob_adapt probability of transitioning to another space
 #' @param temper temperature applied to posterior (and birth/death rates)
-#' @param thresh threshold to add edges to the space from the d samples
 #' @param move_probs how to propose move types. Three current methods:
 #                          a. relocate - always performs node relocation
 #                          b. random - node relocation (NR) 1/3 of the time,
@@ -225,13 +218,12 @@ graph_mcmc <- function(H_0, param, d_expand=1, d_shrink=1,
 #' @param update_order_with_space indicates whether to update the order with a space update
 #' @param save_waiting_times whether to save the waiting times for each step
 #' @param verbose prints the step in the chain number if TRUE, and when shrinking/expanding occurs
-mcmc_sampler_step <- function(prec_t, H_t, K_t, t, d_expand, 
-                              d_shrink, space_banned_score_list, 
+mcmc_sampler_step <- function(prec_t, H_t, K_t, t, space_banned_score_list, 
                               map_pars, banned_pars, plus_pars,
                               full_score_list, plus_banned_list, 
                               plus_score_list, order_score, param, pos_t, 
                               c_star, prob_adapt, temper, score_type,
-                              to_sample_params, rounded, max_change, thresh, 
+                              to_sample_params, rounded, max_change, 
                               move_probs, warm_up, max_sparsity, plus1, 
                               blacklist, birth_rate_matrix=NULL, death_rate_matrix=NULL,
                               rate_update_nodes=NULL, update_order_with_space=TRUE, 
