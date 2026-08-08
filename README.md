@@ -29,9 +29,9 @@ library(pcalg)
 library(Rfast)
 library(yardstick)
 source("./Scripts/BROOD_Functions.R")
-source("./Scripts/Data_Generating_Functions.R")
+source("./Scripts/Data_Generation_Functions.R")
 
-set.seed(123)
+set.seed(4321)
 N <- 50
 n_samples <- 100
 
@@ -114,7 +114,7 @@ abline(h = sum(space_PC_50), lty = 2, col = "grey40")
 legend("bottomright", legend = "PC-algorithm starting size", lty = 2, col = "grey40", bty = "n")
 
 ```
-Using our birth-death-based space changes improves ROC AUC from `0.796618` to `0.962275` from just relying on the straight hybrid sampler.
+Using our birth-death-based space changes improves ROC AUC because it adds and removes edges to the search space throughout the sampler, rather than just relying on the straight hybrid sampler which uses the starting search space throughout.
 
 ## Large-Scale Simulation Pipeline (SLURM Cluster)
 
