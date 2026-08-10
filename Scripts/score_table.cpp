@@ -10,21 +10,25 @@ using namespace Rcpp;
 // choltemp: upper-triangular Cholesky factor of TN(parentnodes0,parentnodes0), lp x lp
 // c_noplus: solve(choltemp^T, TN(j0,parentnodes0)), length lp
 // logdetD:  log|TN(parentnodes0,parentnodes0)|, consistent with choltemp
+// u_matrix (lp x lpp): the bordering vector u_f = R_S^{-T} TN(parentnodes0,f)
+// for every remaining candidate f, ALREADY computed incrementally by the
+// caller's recursion (see recurse() below) rather than solved fresh here.
+// This is the change that drops the per-leaf "+1" cost from O(lp^2 * lpp)
+// (a fresh backsolve against all lpp candidates) to O(lp * lpp) (reusing
+// u_matrix directly) -- u_f itself borders along exactly the same tree as
+// the factor does, so it never needs to be rebuilt from scratch at any row.
 static arma::rowvec score_from_factor(int j0, const arma::uvec& parentnodes0,
                                        const arma::uvec& plus0, const arma::mat& TN,
                                        const arma::mat& choltemp, const arma::vec& c_noplus,
                                        double logdetD, double A, int lp,
-                                       double awpN, int N, const arma::vec& scoreconstvec){
+                                       double awpN, int N, const arma::vec& scoreconstvec,
+                                       const arma::mat& u_matrix){
+  (void)parentnodes0; (void)choltemp;  // no longer needed: u_matrix arrives precomputed
   int lpp = plus0.n_elem;
   double awpNd2 = (awpN - N + lp + 1) / 2.0;
 
   arma::vec TN_j_plus(lpp);
   for(int b=0; b<lpp; b++) TN_j_plus(b) = TN(j0, plus0(b));
-
-  arma::mat TN_plus_off(lp, lpp);
-  for(int a=0; a<lp; a++)
-    for(int b=0; b<lpp; b++)
-      TN_plus_off(a,b) = TN(parentnodes0(a), plus0(b));
 
   arma::vec TN_plus_diag(lpp);
   for(int b=0; b<lpp; b++) TN_plus_diag(b) = TN(plus0(b), plus0(b));
@@ -34,17 +38,15 @@ static arma::rowvec score_from_factor(int j0, const arma::uvec& parentnodes0,
   // scoreconstvec here is 0-indexed; R's scoreconstvec[lp+1] (1-indexed) == scoreconstvec(lp) here
   double corescore = scoreconstvec(lp) - awpNd2*logdetpart2 - logdetD/2.0;
 
-  arma::mat choltemp_new_12 = arma::solve(arma::trimatl(choltemp.t()), TN_plus_off); // lp x lpp
-
   arma::vec choltemp_new_22(lpp);
   for(int b=0; b<lpp; b++){
-    double s = arma::as_scalar(arma::sum(arma::square(choltemp_new_12.col(b))));
+    double s = arma::as_scalar(arma::sum(arma::square(u_matrix.col(b))));
     choltemp_new_22(b) = std::sqrt(TN_plus_diag(b) - s);
   }
 
   arma::vec c_plusses(lpp);
   for(int b=0; b<lpp; b++){
-    double dotpart = arma::as_scalar(arma::dot(choltemp_new_12.col(b), c_noplus));
+    double dotpart = arma::as_scalar(arma::dot(u_matrix.col(b), c_noplus));
     c_plusses(b) = (TN_j_plus(b) - dotpart) / choltemp_new_22(b);
   }
 
@@ -82,6 +84,7 @@ static arma::rowvec score_lp0(int j0, const arma::uvec& plus0, const arma::mat& 
 // downdate is ever computed.
 static void recurse(int depth, int K, std::vector<int>& included_local,
                      const arma::mat& choltemp, const arma::vec& c_noplus, double logdetD,
+                     const arma::mat& u_matrix,
                      int j0, const arma::uvec& cand0, const arma::uvec& plus0,
                      const arma::mat& TN, double A, double awpN, int N,
                      const arma::vec& scoreconstvec, const IntegerVector& maps_backwards,
@@ -99,14 +102,14 @@ static void recurse(int depth, int K, std::vector<int>& included_local,
       arma::uvec parentnodes0(lp);
       for(int a=0; a<lp; a++) parentnodes0(a) = cand0(included_local[a]-1);
       row_scores = score_from_factor(j0, parentnodes0, plus0, TN, choltemp, c_noplus,
-                                     logdetD, A, lp, awpN, N, scoreconstvec);
+                                     logdetD, A, lp, awpN, N, scoreconstvec, u_matrix);
     }
     score_matr.row(row_idx) = row_scores;
     return;
   }
 
   // exclude candidate `depth`
-  recurse(depth+1, K, included_local, choltemp, c_noplus, logdetD,
+  recurse(depth+1, K, included_local, choltemp, c_noplus, logdetD, u_matrix,
           j0, cand0, plus0, TN, A, awpN, N, scoreconstvec, maps_backwards, score_matr);
 
   // include candidate `depth`: bordered Cholesky update, then recurse
@@ -117,12 +120,18 @@ static void recurse(int depth, int K, std::vector<int>& included_local,
   arma::mat new_choltemp;
   arma::vec new_c_noplus;
   double new_logdetD;
+  arma::mat new_u_matrix;
+
+  int lpp = plus0.n_elem;
+  arma::rowvec row_vals(lpp);
+  for(int b=0; b<lpp; b++) row_vals(b) = TN(new_node0, plus0(b));
 
   if(lp_old==0){
     double u = std::sqrt(d_new);
     new_choltemp = arma::mat(1,1); new_choltemp(0,0) = u;
     new_c_noplus = arma::vec(1); new_c_noplus(0) = TN(j0, new_node0) / u;
     new_logdetD = 2*std::log(u);
+    new_u_matrix = row_vals / u;  // 1 x lpp; no bordering term needed at the first step
   } else {
     arma::vec v(lp_old);
     for(int a=0; a<lp_old; a++) v(a) = TN(cand0(included_local[a]-1), new_node0);
@@ -141,10 +150,16 @@ static void recurse(int depth, int K, std::vector<int>& included_local,
     new_c_noplus(lp_old) = new_c_last;
 
     new_logdetD = logdetD + 2*std::log(u);
+
+    // incremental u_matrix update: u_f borders exactly like the factor
+    // itself does, so ONE cheap row (O(lp_old*lpp)) replaces what would
+    // otherwise be a fresh O(lp_old^2*lpp) solve at every leaf below this point
+    arma::rowvec new_row = (row_vals - w.t() * u_matrix) / u;
+    new_u_matrix = arma::join_vert(u_matrix, new_row);
   }
 
   included_local.push_back(depth);
-  recurse(depth+1, K, included_local, new_choltemp, new_c_noplus, new_logdetD,
+  recurse(depth+1, K, included_local, new_choltemp, new_c_noplus, new_logdetD, new_u_matrix,
           j0, cand0, plus0, TN, A, awpN, N, scoreconstvec, maps_backwards, score_matr);
   included_local.pop_back();
 }
@@ -184,7 +199,7 @@ NumericMatrix build_plus_score_table_cpp(int j, IntegerVector cand_nodes, Intege
   std::vector<int> included_local;
   included_local.reserve(K);
 
-  recurse(1, K, included_local, arma::mat(), arma::vec(), 0.0,
+  recurse(1, K, included_local, arma::mat(), arma::vec(), 0.0, arma::mat(0, lpp),
           j0, cand0, plus0, TN, A, awpN, N, scoreconstvec, maps_backwards, score_matr);
 
   return wrap(score_matr);
@@ -210,6 +225,10 @@ NumericMatrix build_plus_score_table_cpp(int j, IntegerVector cand_nodes, Intege
 // penalty structure than BGe's, matched here accordingly.
 // ============================================================================
 
+// cholUN_12, cholU0_12 (lp x lpp each): precomputed incrementally by the
+// caller's recursion, mirroring score_from_factor's u_matrix -- see that
+// function's comment for why this replaces a fresh O(lp^2*lpp) solve with
+// reuse of already-bordered vectors.
 static arma::rowvec dagwishart_score_from_factors(int j0, const arma::uvec& parentnodes0,
                                                    const arma::uvec& plus0, const arma::mat& UN, const arma::mat& U0,
                                                    const arma::mat& cholUN, const arma::vec& cUN, double logdetUN,
@@ -217,20 +236,15 @@ static arma::rowvec dagwishart_score_from_factors(int j0, const arma::uvec& pare
                                                    double A, double A0, int lp,
                                                    double awpN_new, int N, double scoreconst_lp,
                                                    double scoreconst_lpplus1,
-                                                   bool has_penalty, double pen_base, double pen_plus){
+                                                   bool has_penalty, double pen_base, double pen_plus,
+                                                   const arma::mat& cholUN_12, const arma::mat& cholU0_12){
+  (void)parentnodes0; (void)cholUN; (void)cholU0;  // no longer needed: u-matrices arrive precomputed
   int lpp = plus0.n_elem;
   double awpNd2_new = (awpN_new - lp)/2.0 - 1.0;
   double awpd2_new  = (awpN_new - N - lp)/2.0 - 1.0;   // NOT shifted for the +1 extension
 
   arma::vec UN_j_plus(lpp), U0_j_plus(lpp);
   for(int b=0; b<lpp; b++){ UN_j_plus(b) = UN(j0, plus0(b)); U0_j_plus(b) = U0(j0, plus0(b)); }
-
-  arma::mat UN_plus_off(lp, lpp), U0_plus_off(lp, lpp);
-  for(int a=0; a<lp; a++)
-    for(int b=0; b<lpp; b++){
-      UN_plus_off(a,b) = UN(parentnodes0(a), plus0(b));
-      U0_plus_off(a,b) = U0(parentnodes0(a), plus0(b));
-    }
 
   arma::vec UN_plus_diag(lpp), U0_plus_diag(lpp);
   for(int b=0; b<lpp; b++){ UN_plus_diag(b) = UN(plus0(b), plus0(b)); U0_plus_diag(b) = U0(plus0(b), plus0(b)); }
@@ -242,9 +256,6 @@ static arma::rowvec dagwishart_score_from_factors(int j0, const arma::uvec& pare
 
   double corescore = scoreconst_lp - awpNd2_new*logdetpart2_UN - logdetUN/2.0
                                         + awpd2_new*logdetpart2_U0 + logdetU0/2.0;
-
-  arma::mat cholUN_12 = arma::solve(arma::trimatl(cholUN.t()), UN_plus_off);
-  arma::mat cholU0_12 = arma::solve(arma::trimatl(cholU0.t()), U0_plus_off);
 
   arma::rowvec out(lpp+1);
   out(0) = corescore + (has_penalty ? pen_base : 0.0);
@@ -300,6 +311,7 @@ static arma::rowvec dagwishart_score_lp0(int j0, const arma::uvec& plus0, const 
 static void dagwishart_recurse(int depth, int K, std::vector<int>& included_local,
                                 const arma::mat& cholUN, const arma::vec& cUN, double logdetUN,
                                 const arma::mat& cholU0, const arma::vec& cU0, double logdetU0,
+                                const arma::mat& uUN_matrix, const arma::mat& uU0_matrix,
                                 int j0, const arma::uvec& cand0, const arma::uvec& plus0,
                                 const arma::mat& UN, const arma::mat& U0, double A, double A0,
                                 double awpN_new, int N, const List& scoreconstlist,
@@ -334,13 +346,15 @@ static void dagwishart_recurse(int depth, int K, std::vector<int>& included_loca
       row_scores = dagwishart_score_from_factors(j0, parentnodes0, plus0, UN, U0,
                                                  cholUN, cUN, logdetUN, cholU0, cU0, logdetU0,
                                                  A, A0, lp, awpN_new, N, sc_lp, sc_lpplus1,
-                                                 has_penalty, pen_base, pen_plus);
+                                                 has_penalty, pen_base, pen_plus,
+                                                 uUN_matrix, uU0_matrix);
     }
     score_matr.row(row_idx) = row_scores;
     return;
   }
 
   dagwishart_recurse(depth+1, K, included_local, cholUN, cUN, logdetUN, cholU0, cU0, logdetU0,
+                     uUN_matrix, uU0_matrix,
                      j0, cand0, plus0, UN, U0, A, A0, awpN_new, N, scoreconstlist,
                      has_penalty, logedgepvec, maps_backwards, score_matr);
 
@@ -352,6 +366,11 @@ static void dagwishart_recurse(int depth, int K, std::vector<int>& included_loca
   arma::mat new_cholUN, new_cholU0;
   arma::vec new_cUN, new_cU0;
   double new_logdetUN, new_logdetU0;
+  arma::mat new_uUN_matrix, new_uU0_matrix;
+
+  int lpp = plus0.n_elem;
+  arma::rowvec rowUN(lpp), rowU0(lpp);
+  for(int b=0; b<lpp; b++){ rowUN(b) = UN(new_node0, plus0(b)); rowU0(b) = U0(new_node0, plus0(b)); }
 
   if(lp_old==0){
     double uUN = std::sqrt(dUN);
@@ -362,6 +381,8 @@ static void dagwishart_recurse(int depth, int K, std::vector<int>& included_loca
     new_cU0 = arma::vec(1); new_cU0(0) = U0(j0, new_node0) / uU0;
     new_logdetUN = 2*std::log(uUN);
     new_logdetU0 = 2*std::log(uU0);
+    new_uUN_matrix = rowUN / uUN;
+    new_uU0_matrix = rowU0 / uU0;
   } else {
     arma::vec vUN(lp_old), vU0(lp_old);
     for(int a=0; a<lp_old; a++){
@@ -393,11 +414,16 @@ static void dagwishart_recurse(int depth, int K, std::vector<int>& included_loca
 
     new_logdetUN = logdetUN + 2*std::log(uUN);
     new_logdetU0 = logdetU0 + 2*std::log(uU0);
+
+    arma::rowvec newrowUN = (rowUN - wUN.t() * uUN_matrix) / uUN;
+    arma::rowvec newrowU0 = (rowU0 - wU0.t() * uU0_matrix) / uU0;
+    new_uUN_matrix = arma::join_vert(uUN_matrix, newrowUN);
+    new_uU0_matrix = arma::join_vert(uU0_matrix, newrowU0);
   }
 
   included_local.push_back(depth);
   dagwishart_recurse(depth+1, K, included_local, new_cholUN, new_cUN, new_logdetUN,
-                     new_cholU0, new_cU0, new_logdetU0,
+                     new_cholU0, new_cU0, new_logdetU0, new_uUN_matrix, new_uU0_matrix,
                      j0, cand0, plus0, UN, U0, A, A0, awpN_new, N, scoreconstlist,
                      has_penalty, logedgepvec, maps_backwards, score_matr);
   included_local.pop_back();
@@ -439,6 +465,7 @@ NumericMatrix build_plus_score_table_dagwishart_cpp(int j, IntegerVector cand_no
 
   dagwishart_recurse(1, K, included_local, arma::mat(), arma::vec(), 0.0,
                      arma::mat(), arma::vec(), 0.0,
+                     arma::mat(0, lpp), arma::mat(0, lpp),
                      j0, cand0, plus0, UN, U0, A, A0, awpN_new, N, scoreconstlist,
                      has_penalty, logedgepvec, maps_backwards, score_matr);
 
@@ -458,6 +485,7 @@ NumericMatrix build_plus_score_table_dagwishart_cpp(int j, IntegerVector cand_no
 
 static void extend_recurse(int depth, int K, std::vector<int>& included_local,
                            const arma::mat& choltemp, const arma::vec& c_noplus, double logdetD,
+                           const arma::mat& u_matrix,
                            int j0, const arma::uvec& old_cand0, const arma::uvec& remaining_plus0,
                            const arma::mat& TN, double A, int e0, double awpN, int N,
                            const arma::vec& scoreconstvec, const IntegerVector& new_maps_backwards,
@@ -479,24 +507,20 @@ static void extend_recurse(int depth, int K, std::vector<int>& included_local,
     int lp = 1 + (int)included_local.size();  // |S U {e}|, varies per leaf
     double awpNd2 = (awpN - N + lp + 1) / 2.0;
     double scoreconst_plus = scoreconstvec(lp+1); // R's scoreconstvec[lp+2] (1-idx) -> (lp+1) 0-idx
-    arma::uvec parentnodes0(lp);
-    parentnodes0(0) = e0;
-    for(size_t a=0; a<included_local.size(); a++) parentnodes0(a+1) = old_cand0(included_local[a]-1);
 
     arma::vec TN_j_plus(lpp), TN_plus_diag(lpp);
-    arma::mat TN_plus_off(lp, lpp);
     for(int b=0; b<lpp; b++){
       TN_j_plus(b) = TN(j0, remaining_plus0(b));
       TN_plus_diag(b) = TN(remaining_plus0(b), remaining_plus0(b));
-      for(int a=0; a<lp; a++) TN_plus_off(a,b) = TN(parentnodes0(a), remaining_plus0(b));
     }
 
     double c_sq = arma::as_scalar(arma::sum(arma::square(c_noplus)));
-    arma::mat choltemp_12 = arma::solve(arma::trimatl(choltemp.t()), TN_plus_off);
+    // u_matrix (lp x lpp) is already correct here -- built incrementally by
+    // the recursion below, same as recurse()'s own u_matrix
     for(int b=0; b<lpp; b++){
-      double s = arma::as_scalar(arma::sum(arma::square(choltemp_12.col(b))));
+      double s = arma::as_scalar(arma::sum(arma::square(u_matrix.col(b))));
       double u = std::sqrt(TN_plus_diag(b) - s);
-      double cplus = (TN_j_plus(b) - arma::as_scalar(arma::dot(choltemp_12.col(b), c_noplus))) / u;
+      double cplus = (TN_j_plus(b) - arma::as_scalar(arma::dot(u_matrix.col(b), c_noplus))) / u;
       double logdetD_plus = logdetD + 2*std::log(u);
       double logdetpart2_plus = std::log(A - c_sq - cplus*cplus);
       score_matr(row_idx, b+1) = scoreconst_plus - (awpNd2+0.5)*logdetpart2_plus - logdetD_plus/2.0;
@@ -504,7 +528,7 @@ static void extend_recurse(int depth, int K, std::vector<int>& included_local,
     return;
   }
 
-  extend_recurse(depth+1, K, included_local, choltemp, c_noplus, logdetD,
+  extend_recurse(depth+1, K, included_local, choltemp, c_noplus, logdetD, u_matrix,
                 j0, old_cand0, remaining_plus0, TN, A, e0, awpN, N, scoreconstvec,
                 new_maps_backwards, new_pos_of_old, e_new_pos0, score_matr,
                 old_maps_backwards, old_score_matr, e_old_col);
@@ -531,8 +555,14 @@ static void extend_recurse(int depth, int K, std::vector<int>& included_local,
   new_c(lp_old) = new_c_last;
   double new_logdetD = logdetD + 2*std::log(u);
 
+  int lpp = remaining_plus0.n_elem;
+  arma::rowvec row_vals(lpp);
+  for(int b=0; b<lpp; b++) row_vals(b) = TN(new_node0, remaining_plus0(b));
+  arma::rowvec new_row = (row_vals - w.t() * u_matrix) / u;
+  arma::mat new_u_matrix = arma::join_vert(u_matrix, new_row);
+
   included_local.push_back(depth);
-  extend_recurse(depth+1, K, included_local, new_choltemp, new_c, new_logdetD,
+  extend_recurse(depth+1, K, included_local, new_choltemp, new_c, new_logdetD, new_u_matrix,
                 j0, old_cand0, remaining_plus0, TN, A, e0, awpN, N, scoreconstvec,
                 new_maps_backwards, new_pos_of_old, e_new_pos0, score_matr,
                 old_maps_backwards, old_score_matr, e_old_col);
@@ -615,12 +645,14 @@ NumericMatrix extend_plus_score_table_cpp(int j, IntegerVector old_cand_nodes, I
   arma::mat choltemp_e(1,1); choltemp_e(0,0) = u_e;
   arma::vec c_e(1); c_e(0) = TN(j0,e0)/u_e;
   double logdetD_e = 2*std::log(u_e);
+  arma::rowvec u_matrix_e(lpp);
+  for(int b=0; b<lpp; b++) u_matrix_e(b) = TN(e0, remaining_plus0(b)) / u_e;
 
   // awpNd2 and scoreconst for the (K+1)-length ("+1" over K+1 base) case --
   // matches bge_score_plus_parent's convention: awpNd2 uses lp = K+1 (the
   // NEW base size), scoreconstvec index is lp+2 = K+3 (1-indexed) -> K+2 (0-indexed)
   std::vector<int> included_local; included_local.reserve(K);
-  extend_recurse(1, K, included_local, choltemp_e, c_e, logdetD_e,
+  extend_recurse(1, K, included_local, choltemp_e, c_e, logdetD_e, u_matrix_e,
                 j0, old_cand0, remaining_plus0, TN, A, e0, awpN, N, scoreconstvec,
                 new_maps_backwards, new_pos_of_old, e_new_pos0, score_matr,
                 old_maps_backwards, old_score_matr_r, e_old_col);
@@ -640,6 +672,7 @@ NumericMatrix extend_plus_score_table_cpp(int j, IntegerVector old_cand_nodes, I
 static void dagwishart_extend_recurse(int depth, int K, std::vector<int>& included_local,
                                       const arma::mat& cholUN, const arma::vec& cUN, double logdetUN,
                                       const arma::mat& cholU0, const arma::vec& cU0, double logdetU0,
+                                      const arma::mat& uUN_matrix, const arma::mat& uU0_matrix,
                                       int j0, const arma::uvec& old_cand0, const arma::uvec& remaining_plus0,
                                       const arma::mat& UN, const arma::mat& U0, double A, double A0,
                                       int e0, double awpN_new, int N, const arma::vec& scoreconstlist_lp,
@@ -677,10 +710,12 @@ static void dagwishart_extend_recurse(int depth, int K, std::vector<int>& includ
 
     if(lpp == 0){
       arma::uvec empty_plus0;
+      arma::mat empty_u;
       arma::rowvec row_scores = dagwishart_score_from_factors(j0, parentnodes0, empty_plus0, UN, U0,
                                                                cholUN, cUN, logdetUN, cholU0, cU0, logdetU0,
                                                                A, A0, lp, awpN_new, N, scoreconst_lp,
-                                                               scoreconst_lpplus1, has_penalty, pen_base, pen_plus);
+                                                               scoreconst_lpplus1, has_penalty, pen_base, pen_plus,
+                                                               empty_u, empty_u);
       score_matr(row_idx, 0) = row_scores(0);
       return;
     }
@@ -688,12 +723,14 @@ static void dagwishart_extend_recurse(int depth, int K, std::vector<int>& includ
     arma::rowvec row_scores = dagwishart_score_from_factors(j0, parentnodes0, remaining_plus0, UN, U0,
                                                              cholUN, cUN, logdetUN, cholU0, cU0, logdetU0,
                                                              A, A0, lp, awpN_new, N, scoreconst_lp,
-                                                             scoreconst_lpplus1, has_penalty, pen_base, pen_plus);
+                                                             scoreconst_lpplus1, has_penalty, pen_base, pen_plus,
+                                                             uUN_matrix, uU0_matrix);
     for(int b=0; b<=lpp; b++) score_matr(row_idx, b) = row_scores(b);
     return;
   }
 
   dagwishart_extend_recurse(depth+1, K, included_local, cholUN, cUN, logdetUN, cholU0, cU0, logdetU0,
+                            uUN_matrix, uU0_matrix,
                             j0, old_cand0, remaining_plus0, UN, U0, A, A0, e0, awpN_new, N, scoreconstlist_lp,
                             new_maps_backwards, new_pos_of_old, e_new_pos0, score_matr,
                             old_maps_backwards, old_score_matr, e_old_col, has_penalty, logedgepvec);
@@ -735,9 +772,20 @@ static void dagwishart_extend_recurse(int depth, int K, std::vector<int>& includ
   double new_logdetUN = logdetUN + 2*std::log(uUN);
   double new_logdetU0 = logdetU0 + 2*std::log(uU0);
 
+  int lpp = remaining_plus0.n_elem;
+  arma::rowvec new_uUN_matrix, new_uU0_matrix;
+  if(lpp > 0){
+    arma::rowvec rowUN(lpp), rowU0(lpp);
+    for(int b=0; b<lpp; b++){ rowUN(b) = UN(new_node0, remaining_plus0(b)); rowU0(b) = U0(new_node0, remaining_plus0(b)); }
+    new_uUN_matrix = (rowUN - wUN.t() * uUN_matrix) / uUN;
+    new_uU0_matrix = (rowU0 - wU0.t() * uU0_matrix) / uU0;
+  }
+  arma::mat next_uUN_matrix = lpp>0 ? arma::mat(arma::join_vert(uUN_matrix, new_uUN_matrix)) : arma::mat(lp_old+1, 0);
+  arma::mat next_uU0_matrix = lpp>0 ? arma::mat(arma::join_vert(uU0_matrix, new_uU0_matrix)) : arma::mat(lp_old+1, 0);
+
   included_local.push_back(depth);
   dagwishart_extend_recurse(depth+1, K, included_local, new_cholUN, new_cUN, new_logdetUN,
-                            new_cholU0, new_cU0, new_logdetU0,
+                            new_cholU0, new_cU0, new_logdetU0, next_uUN_matrix, next_uU0_matrix,
                             j0, old_cand0, remaining_plus0, UN, U0, A, A0, e0, awpN_new, N, scoreconstlist_lp,
                             new_maps_backwards, new_pos_of_old, e_new_pos0, score_matr,
                             old_maps_backwards, old_score_matr, e_old_col, has_penalty, logedgepvec);
@@ -828,8 +876,18 @@ NumericMatrix extend_plus_score_table_dagwishart_cpp(int j, IntegerVector old_ca
     for(int m=0; m<max_idx; m++) scoreconstlist_j(m) = as<NumericVector>(scoreconstlist[m])[j0];
   }
 
+  arma::mat uUN_matrix_e, uU0_matrix_e;
+  if(lpp > 0){
+    arma::rowvec rUN(lpp), rU0(lpp);
+    for(int b=0; b<lpp; b++){ rUN(b) = UN(e0, remaining_plus0(b)) / uUN_e; rU0(b) = U0(e0, remaining_plus0(b)) / uU0_e; }
+    uUN_matrix_e = rUN; uU0_matrix_e = rU0;
+  } else {
+    uUN_matrix_e = arma::mat(1,0); uU0_matrix_e = arma::mat(1,0);
+  }
+
   std::vector<int> included_local; included_local.reserve(K);
   dagwishart_extend_recurse(1, K, included_local, cholUN_e, cUN_e, logdetUN_e, cholU0_e, cU0_e, logdetU0_e,
+                            uUN_matrix_e, uU0_matrix_e,
                             j0, old_cand0, remaining_plus0, UN, U0, A, A0, e0, awpN_new, N, scoreconstlist_j,
                             new_maps_backwards, new_pos_of_old, e_new_pos0, score_matr,
                             old_maps_backwards, old_score_matr_r, e_old_col, has_penalty, logedgepvec);
