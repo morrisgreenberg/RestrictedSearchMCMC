@@ -955,21 +955,18 @@ create_banned_plus_parent_table <- function(H, map_pars, plus_pars,
         zeta_matr <- score_plus_list[[i]]
         N_scores <- nrow(zeta_matr)
         if(N_pars > 0){
+          backwards_i <- map_pars$maps[[i]]$backwards
+          bitmask_vals <- 0:(N_scores-1)
           for(t in 1:N_pars){
-            index_t <- numeric(0)
-            for(colsy in 1:N_pars){
-              index_t <- c(index_t, which(t==map_pars$idx_pset[[i]][,colsy]))
-            }
-            for(rowsy in index_t){
-              mapped_val <- map_pars$maps[[i]]$forward[rowsy]-2^(t-1)
-              min_rowsy <- map_pars$maps[[i]]$backwards[mapped_val]
-              if(ncol(zeta_matr)>1){
-                zeta_matr[rowsy,] <- colLogSumExps(zeta_matr[c(rowsy, min_rowsy),])
-              }
-              else{
-                zeta_matr[rowsy,] <- logSumExp(zeta_matr[c(rowsy, min_rowsy),])
-              }
-            }
+            bit <- 2^(t-1)
+            has_bit <- (bitwAnd(bitmask_vals, bit) > 0)
+            bitmasks_with_bit <- bitmask_vals[has_bit]
+            rows_with_bit <- backwards_i[bitmasks_with_bit + 1]
+            rows_without_bit <- backwards_i[bitmasks_with_bit - bit + 1]
+            a <- zeta_matr[rows_with_bit, , drop=FALSE]
+            b <- zeta_matr[rows_without_bit, , drop=FALSE]
+            pmax_ab <- pmax(a, b)
+            zeta_matr[rows_with_bit, ] <- pmax_ab + log(exp(a - pmax_ab) + exp(b - pmax_ab))
           }
           orderscore_plus[[i]] <- zeta_matr[N_scores:1,]
           orderscore_curr[[i]] <- matrix(zeta_matr[N_scores:1,1], ncol=1)
