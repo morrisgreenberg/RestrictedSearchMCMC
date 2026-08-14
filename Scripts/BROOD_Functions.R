@@ -176,18 +176,33 @@ graph_mcmc <- function(H_0, param, c_star=1, space_move_prob=0.1, temper=1,
     order_score <- step$curr_order_score
     plus_mappings <- step$plus_par_mappings
     banned_mappings <- step$banned_par_mappings
-    D_b <- if(sample_parameters) step$D_t_plus1 else NULL
     curr_weight <- if(save_curr_weight) step$weight else NULL
     curr_update <- step$update_type
     
     H_b <- step$H_t_plus1
-    G_b <- step$G_t_plus1
-    G1_b <- if(!plus1) step$G1_t_plus1 else NULL
-    L_b <- if(sample_parameters) step$L_t_plus1 else NULL
     
     # Store thinned samples
     if(b %in% thinned_samples) {
       idx <- which(thinned_samples == b)
+      
+      if(plus1){
+        G_b <- sample_graph(full_scores, prec_b, mappings, 
+                            banned_mappings, plus_1 = TRUE, full_plus_scores,
+                            banned_plus_scores, plus_mappings)
+      }
+      else{
+        G_b <- sample_graph(full_scores, prec_b, mappings, 
+                            banned_mappings, plus_1 = FALSE)
+        G1_b <- sample_graph(full_scores, prec_b, mappings, 
+                             banned_mappings, plus_1 = TRUE, full_plus_scores,
+                             banned_plus_scores, plus_mappings)
+      }
+      if(sample_parameters){
+        pars_b <- sample_DL_parameters(G_b, prec_b, param)
+        L_b <- pars_b$L
+        D_b <- pars_b$D
+      }
+      
       precs[idx,] <- prec_b
       Ks[idx] <- K_b
       weight_vec[idx] <- curr_weight
@@ -637,19 +652,6 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, space_banned_score_list,
       rate_update_nodes_next <- unique(c(rate_update_nodes_next, update_nodes))
     }
     
-    if(plus1){
-      graph_t_plus1 <- sample_graph(new_full_scores, prec_t_plus1, new_mappings, 
-                                    banned_pars, plus_1 = TRUE, new_plus_scores,
-                                    new_banned_plus_scores, new_plus_mappings)
-    }
-    else{
-      graph_t_plus1 <- sample_graph(new_full_scores, prec_t_plus1, new_mappings, 
-                                    banned_pars, plus_1 = FALSE)
-      graph_plus1_t_plus1 <- sample_graph(new_full_scores, prec_t_plus1, new_mappings, 
-                                          banned_pars, plus_1 = TRUE, new_plus_scores,
-                                          new_banned_plus_scores, new_plus_mappings)
-    }
-    
   }
   
   else{
@@ -718,20 +720,6 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, space_banned_score_list,
       }
     }
     
-    if(plus1){
-      graph_t_plus1 <- sample_graph(full_score_list, prec_t_plus1, map_pars, banned_pars,
-                                    plus_1=TRUE, plus_score_list, plus_banned_list,
-                                    plus_pars)
-    }
-    else{
-      graph_t_plus1 <- sample_graph(full_score_list, prec_t_plus1, map_pars, 
-                                    banned_pars, plus_1 = FALSE)
-      graph_plus1_t_plus1 <- sample_graph(full_score_list, prec_t_plus1, map_pars, banned_pars,
-                                          plus_1=TRUE, plus_score_list, plus_banned_list,
-                                          plus_pars)
-    }
-    
-    
     #standard update of the search space
     H_t_plus1 <- H_t
     new_full_scores <- full_score_list
@@ -759,16 +747,8 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, space_banned_score_list,
   
   K_t_plus1 <- K_t
   
-  if(to_sample_params){
-    pars_t_plus1 <- sample_DL_parameters(graph_t_plus1, prec_t_plus1, param)
-    L_matr <- pars_t_plus1$L
-    D_vec <- pars_t_plus1$D
-  }
-  
-  
-  output_list <- list(prec_t_plus1=prec_t_plus1, G_t_plus1=graph_t_plus1,
-                      H_t_plus1=H_t_plus1, K_t_plus1=K_t_plus1,
-                      order_scores = new_full_scores, 
+  output_list <- list(prec_t_plus1=prec_t_plus1, H_t_plus1=H_t_plus1, 
+                      K_t_plus1=K_t_plus1, order_scores = new_full_scores, 
                       banned_scores = new_banned_scores,
                       par_mappings = new_mappings,
                       order_plus_scores = new_plus_scores,
@@ -785,13 +765,6 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, space_banned_score_list,
   
   if(save_waiting_times){
     output_list$weight <- w_t_plus1
-  }
-  if(to_sample_params){
-    output_list$L_t_plus1 <- L_matr
-    output_list$D_t_plus1 <- D_vec
-  }
-  if(!plus1){
-    output_list$G1_t_plus1 <- graph_plus1_t_plus1
   }
   
   return(output_list)
