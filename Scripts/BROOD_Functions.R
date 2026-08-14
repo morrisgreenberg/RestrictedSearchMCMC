@@ -8,7 +8,13 @@ library(RcppArmadillo)
 # Compiles build_plus_score_table_cpp(). Path is relative to the Scripts/
 # directory this file lives in, matching source("./Scripts/BROOD_Functions.R")
 # run from the repo root.
-Rcpp::sourceCpp("Scripts/score_table.cpp")
+current_script_path <- tryCatch(
+  normalizePath(sys.frame(1)$ofile),
+  error = function(e) stop("Cannot find script path. Please source this file rather than running line-by-line.")
+)
+script_dir <- dirname(current_script_path)
+
+Rcpp::sourceCpp(file.path(script_dir, "score_table.cpp"))
 
 # ==============================================================================
 # 1. MAIN WRAPPER: graph_mcmc
@@ -20,11 +26,18 @@ Rcpp::sourceCpp("Scripts/score_table.cpp")
 #' @param c_star scaling constant for death rates (smaller means more inclusive search space)
 #' @param space_move_prob Probability of attempting a search space expansion/contraction.
 #' @param temper temperature to apply to the posterior (and birth/death rates)
+#' @param momentum If TRUE, applies momentum to search space proposals (only works for 'symmetric' proposals)
+#' @param q_scheme how to propose search space move types. Two current methods:
+#'                      a. rate_based - based on the classic BDMCMC sampler; acceptance ratio
+#'                                      is a ratio between waiting times
+#'                      b. symmetric - 1/2 prob of proposing a birth or death edge; acceptance
+#'                                     is a ratio between birth rate of smaller space and death
+#'                                     rate of larger space
 #' @param iter number of steps of the chain
 #' @param warm_up amount of steps before adaptation starts (defaults to 10*N)
 #' @param max_sparsity limit on the number of parents a node can have
 #' @param blacklist list of any parent structures that are not allowed
-#' @param move_type how to propose move types. Three current methods:
+#' @param move_type how to propose order move types. Three current methods:
 #                           a. relocate - always performs node relocation
 #                           b. random - node relocation (NR) 1/3 of the time,
 #                                       local transposition (LT) 1/3,
@@ -41,10 +54,11 @@ Rcpp::sourceCpp("Scripts/score_table.cpp")
 #' @param sparse If TRUE, uses the Matrix::Matrix(sparse=TRUE) type matrices, or standard R matrices in saved output
 #' @param verbose Outputs progress as the Markov Chain progresses
 graph_mcmc <- function(H_0, param, c_star=1, space_move_prob=0.1, temper=1,
-                       iter=25000, warm_up=NULL, max_sparsity=18, blacklist=NULL, 
-                       thinning=250, move_type="relocate", sample_parameters=FALSE,
-                       plus1=FALSE, score_type="bge", rounded=FALSE, max_change=1,
-                       update_order_with_space=FALSE, save_all_weights=TRUE, sparse=TRUE, verbose=TRUE) {
+                       momentum=FALSE, q_scheme="rate_based",iter=25000, 
+                       warm_up=NULL, max_sparsity=18, blacklist=NULL, thinning=250, 
+                       move_type="relocate", sample_parameters=FALSE, plus1=FALSE, 
+                       score_type="bge", rounded=FALSE, max_change=1, update_order_with_space=FALSE, 
+                       save_all_weights=TRUE, sparse=TRUE, verbose=TRUE) {
   
   if(!(score_type %in% c("bge", "dag_wishart"))) stop("Please use a valid score function: 'bge' or 'dag_wishart' ")
   
@@ -69,6 +83,29 @@ graph_mcmc <- function(H_0, param, c_star=1, space_move_prob=0.1, temper=1,
   birth_rate_matrix_b <- NULL   # NULL => first use triggers a full recompute
   death_rate_matrix_b <- NULL
   rate_update_nodes_b <- NULL
+  
+  v_b <- if(momentum) sample(c(1,-1), 1) else NULL
+  if(momentum && space_move_prob >= 1){
+    warning(paste("momentum=TRUE requires space_move_prob < 1: the order kernel Q0",
+                  "(applied with probability 1-space_move_prob) is what restores",
+                  "aperiodicity for the lifted Q1 chain -- with space_move_prob=1,",
+                  "Q1 alone is run every iteration and the chain is provably",
+                  "period-two and will not converge."))
+  }
+  if(!(q_scheme %in% c("rate_based","symmetric"))){
+    stop("q_scheme must be 'rate_based' (waiting-time-ratio acceptance, the ",
+         "original BROOD sampler) or 'symmetric' (q(H)+q(H+e)=1, edge ",
+         "proposals stay rate-proportional as before, but acceptance becomes ",
+         "beta(H)/delta(H+e), decoupled from the specific edge's own rate).")
+  }
+  if(momentum && q_scheme != "rate_based"){
+    # momentum's own accept rule IS the symmetric one (min{1,beta/delta}) by
+    # construction -- q_scheme has no separate role once direction comes from
+    # v rather than a fresh q(x) coin flip, so silently overriding avoids a
+    # confusing combination rather than erroring on it
+    q_scheme <- "rate_based"
+  }
+  
   
   # Initial Mappings
   mappings <- parents_mapping(H_0)
@@ -100,6 +137,7 @@ graph_mcmc <- function(H_0, param, c_star=1, space_move_prob=0.1, temper=1,
   Ks <- numeric(B_saved)
   weight_vec <- numeric(B_saved)
   update_vec <- character(B_saved)
+  momentum_vec <- if(momentum) integer(B_saved) else NULL
   Ls <- if(sample_parameters) (if(sparse) vector(mode="list", B_saved) else array(dim=c(N, N, B_saved))) else NULL
   Ds <- if(sample_parameters) matrix(nrow=B_saved, ncol=N) else NULL
   
@@ -113,6 +151,7 @@ graph_mcmc <- function(H_0, param, c_star=1, space_move_prob=0.1, temper=1,
                               banned_mappings, plus_mappings, full_scores, 
                               banned_plus_scores, full_plus_scores, order_score, 
                               param, pos_b, c_star, space_move_prob, temper,
+                              momentum=momentum, v_t=v_b, q_scheme=q_scheme,
                               score_type, sample_parameters, rounded, max_change, 
                               move_type, warm_up, max_sparsity, plus1, 
                               blacklist, birth_rate_matrix=birth_rate_matrix_b,
@@ -127,6 +166,7 @@ graph_mcmc <- function(H_0, param, c_star=1, space_move_prob=0.1, temper=1,
     birth_rate_matrix_b <- step$birth_rate_matrix
     death_rate_matrix_b <- step$death_rate_matrix
     rate_update_nodes_b <- step$rate_update_nodes
+    v_b <- step$v_t_plus1
     K_b <- step$K_t_plus1
     banned_scores <- step$banned_scores
     full_scores <- step$order_scores
@@ -152,6 +192,7 @@ graph_mcmc <- function(H_0, param, c_star=1, space_move_prob=0.1, temper=1,
       Ks[idx] <- K_b
       weight_vec[idx] <- curr_weight
       update_vec[idx] <- curr_update
+      if(momentum) momentum_vec[idx] <- v_b
       if(sample_parameters) Ds[idx,] <- D_b
       
       if(!sparse){
@@ -174,6 +215,7 @@ graph_mcmc <- function(H_0, param, c_star=1, space_move_prob=0.1, temper=1,
   
   out_list <- list(orders=precs, graphs=Gs, skeletons=skels, spaces=Hs,
                    sparsity=Ks, weights=weight_vec, update=update_vec)
+  if(momentum) out_list$momentum <- momentum_vec
   if(!plus1) out_list$plusgraphs <- G1s
   if(sample_parameters) {
     out_list$D_vecs <- Ds
@@ -202,6 +244,13 @@ graph_mcmc <- function(H_0, param, c_star=1, space_move_prob=0.1, temper=1,
 #' @param c_star scaling constant to offset death rates if wanting a larger search space
 #' @param prob_adapt probability of transitioning to another space
 #' @param temper temperature applied to posterior (and birth/death rates)
+#' @param momentum If TRUE, applies momentum to search space proposals (only works for 'symmetric' proposals)
+#' @param q_scheme how to propose search space move types. Two current methods:
+#'                      a. rate_based - based on the classic BDMCMC sampler; acceptance ratio
+#'                                      is a ratio between waiting times
+#'                      b. symmetric - 1/2 prob of proposing a birth or death edge; acceptance
+#'                                     is a ratio between birth rate of smaller space and death
+#'                                     rate of larger space
 #' @param move_probs how to propose move types. Three current methods:
 #                          a. relocate - always performs node relocation
 #                          b. random - node relocation (NR) 1/3 of the time,
@@ -222,10 +271,11 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, space_banned_score_list,
                               map_pars, banned_pars, plus_pars,
                               full_score_list, plus_banned_list, 
                               plus_score_list, order_score, param, pos_t, 
-                              c_star, prob_adapt, temper, score_type,
-                              to_sample_params, rounded, max_change, 
-                              move_probs, warm_up, max_sparsity, plus1, 
-                              blacklist, birth_rate_matrix=NULL, death_rate_matrix=NULL,
+                              c_star, prob_adapt, temper, momentum, v_t, 
+                              q_scheme, score_type, to_sample_params, 
+                              rounded, max_change, move_probs, warm_up, 
+                              max_sparsity, plus1, blacklist, 
+                              birth_rate_matrix=NULL, death_rate_matrix=NULL,
                               rate_update_nodes=NULL, update_order_with_space=TRUE, 
                               save_waiting_times, verbose){
   N <- nrow(H_t)
@@ -241,6 +291,10 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, space_banned_score_list,
     is_adaption <- sample(c(T, F), 1, prob=c(prob_adapt, 1-prob_adapt))
   }
   is_expansion <- F
+  # momentum's direction variable v is auxiliary chain state, not part of the
+  # target -- lazily initialize on first use (e.g. iteration 1, or whenever
+  # graph_mcmc hasn't been threading it through yet)
+  if(momentum && is.null(v_t)) v_t <- sample(c(1,-1), 1)
   
   rate_update_nodes_next <- rate_update_nodes
   if(is.null(rate_update_nodes_next)) rate_update_nodes_next <- integer(0)
@@ -267,12 +321,35 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, space_banned_score_list,
   type_of_update <- "displacement"
   
   if(is_adaption){
-    
-    #sampling whether we do any expansion/contraction steps
-    process <- sample(c("Birth", "Death"), size=1, 
-                      prob=exp(c(logsum_br+w_t, logsum_dr+w_t)))
-    if(process=="Birth"){
-      is_expansion <- T
+    if(momentum){
+      # momentum kernel: direction v_t forces which move type gets attempted;
+      # no q(x) coin flip. Aperiodicity of the FULL Q_ell = (1-ell)Q0 + ell*Q1
+      # chain comes from Q0 (applied with prob 1-space_move_prob) leaving
+      # (|E_H|, v) unchanged -- a genuine self-loop in the parity graph that
+      # breaks the pure-Q1 chain's period-two structure. No separate refresh
+      # step is needed as long as space_move_prob < 1.
+      is_expansion <- (v_t == 1)
+    }
+    else if(q_scheme=="symmetric"){
+      # q(H)+q(H+e)=1 throughout (q=1/2 is the simplest member of this
+      # family): the birth-vs-death TYPE choice is a fair coin flip,
+      # independent of the relative sizes of beta(H), delta(H). Edge
+      # selection, GIVEN the type, stays rate-proportional exactly as in
+      # "rate_based" -- that's what makes B_e/D_e cancel in the acceptance
+      # ratio, leaving beta(H)/delta(H+e), decoupled from any one edge's own
+      # rate.
+      process <- sample(c("Birth", "Death"), size=1, prob=c(0.5,0.5))
+      if(process=="Birth"){
+        is_expansion <- T
+      }
+    }
+    else{
+      #sampling whether we do any expansion/contraction steps
+      process <- sample(c("Birth", "Death"), size=1, 
+                        prob=exp(c(logsum_br+w_t, logsum_dr+w_t)))
+      if(process=="Birth"){
+        is_expansion <- T
+      }
     }
   }
   #sampling move type
@@ -424,7 +501,23 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, space_banned_score_list,
                                                        old_matrix = death_rates, temp=temper)
       
       w_proposed <- -logSumExp(c(logSumExp(birth_rates_proposed),logSumExp(death_rates_proposed)))
-      r_t <- w_proposed-w_t
+      
+      if(momentum || q_scheme=="symmetric"){
+        # both momentum and the symmetric q_scheme use the SAME acceptance
+        # formula -- beta at the smaller state over delta at the larger one
+        # (or the reverse for a death) -- momentum just additionally makes
+        # the type choice persistent via v instead of a fresh coin flip
+        if(is_expansion){
+          r_t <- logsum_br - logSumExp(death_rates_proposed)
+        }
+        else{
+          r_t <- logsum_dr - logSumExp(birth_rates_proposed)
+        }
+      }
+      else{
+        r_t <- w_proposed-w_t
+      }
+      
       acpt_rate_t <- min(1, exp(r_t))
       
       # perform M-H accept/reject step
@@ -650,6 +743,17 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, space_banned_score_list,
     if(save_waiting_times){
       w_t_plus1 <- w_t
     }
+    if(momentum){
+      if(is_adaption){
+        v_t_plus1 <- if(to_update) v_t else -v_t
+      }
+      else{
+        v_t_plus1 <- v_t
+      }
+    }
+    else{
+      v_t_plus1 <- v_t
+    }
   }
   
   K_t_plus1 <- K_t
@@ -675,7 +779,8 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, space_banned_score_list,
                       pos_t_plus1 = pos_t_plus1,
                       birth_rate_matrix = birth_rate_matrix_out,
                       death_rate_matrix = death_rate_matrix_out,
-                      rate_update_nodes = rate_update_nodes_next)
+                      rate_update_nodes = rate_update_nodes_next,
+                      v_t_plus1 = v_t_plus1)
   
   if(save_waiting_times){
     output_list$weight <- w_t_plus1
@@ -769,7 +874,31 @@ score_plus_space <- function(H, map_pars, plus_pars, param,
         n_nonparent_sets <- nrow(plus_combos)
         if(n_nonparent_sets==1){
           if(has_scores_orig){
-            score_matr <- H_scores[[i]]
+            newly_added <- if(has_plus_orig && !is.null(map_pars_orig)) setdiff(map_pars$par_names[[i]], map_pars_orig$par_names[[i]]) else integer(0)
+            if(score_type == "bge" && length(newly_added) == 1){
+              score_matr <- extend_plus_score_table_cpp(i, map_pars_orig$par_names[[i]],
+                                                        plus_pars_orig$par_pset[[i]][-1,1],
+                                                        as.integer(newly_added), H_plus_scores[[i]],
+                                                        map_pars_orig$maps[[i]]$backwards,
+                                                        map_pars$par_names[[i]],
+                                                        map_pars$maps[[i]]$backwards, param$TN,
+                                                        param$awpN, param$scoreconstvec)
+            }
+            else if(score_type == "dag_wishart" && length(newly_added) == 1){
+              score_matr <- extend_plus_score_table_dagwishart_cpp(i, map_pars_orig$par_names[[i]],
+                                                                   plus_pars_orig$par_pset[[i]][-1,1],
+                                                                   as.integer(newly_added), H_plus_scores[[i]],
+                                                                   map_pars_orig$maps[[i]]$backwards,
+                                                                   map_pars$par_names[[i]],
+                                                                   map_pars$maps[[i]]$backwards, param$UN, param$U0,
+                                                                   param$alpha_post[i], param$scoreconstlist,
+                                                                   if(is.null(param$logedgepvec)) numeric(0) else param$logedgepvec)
+            }
+            else{
+              # this node's own row didn't change (in updatenodes for some
+              # other reason) -- the old table is still valid as-is
+              score_matr <- H_scores[[i]]
+            }
           }
           else{
             score_matr <- matrix(0, nrow=n_parent_sets, ncol=1)
@@ -968,7 +1097,7 @@ create_banned_plus_parent_table <- function(H, map_pars, plus_pars,
             pmax_ab <- pmax(a, b)
             zeta_matr[rows_with_bit, ] <- pmax_ab + log(exp(a - pmax_ab) + exp(b - pmax_ab))
           }
-          orderscore_plus[[i]] <- zeta_matr[N_scores:1,]
+          orderscore_plus[[i]] <- zeta_matr[N_scores:1,, drop=FALSE]
           orderscore_curr[[i]] <- matrix(zeta_matr[N_scores:1,1], ncol=1)
         }
         else{

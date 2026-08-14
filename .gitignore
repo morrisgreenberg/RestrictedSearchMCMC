@@ -4,3 +4,4 @@
 .Ruserdata
 /logs/
 /Output/
+*.rds
