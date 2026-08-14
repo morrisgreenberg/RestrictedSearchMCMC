@@ -743,17 +743,18 @@ mcmc_sampler_step <- function(prec_t, H_t, K_t, t, space_banned_score_list,
     if(save_waiting_times){
       w_t_plus1 <- w_t
     }
-    if(momentum){
-      if(is_adaption){
-        v_t_plus1 <- if(to_update) v_t else -v_t
-      }
-      else{
-        v_t_plus1 <- v_t
-      }
+  }
+  
+  if(momentum){
+    if(is_adaption){
+      v_t_plus1 <- if(to_update) v_t else -v_t
     }
     else{
       v_t_plus1 <- v_t
     }
+  }
+  else{
+    v_t_plus1 <- v_t
   }
   
   K_t_plus1 <- K_t
