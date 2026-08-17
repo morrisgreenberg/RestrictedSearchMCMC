@@ -8,10 +8,12 @@ library(RcppArmadillo)
 # Compiles build_plus_score_table_cpp(). Path is relative to the Scripts/
 # directory this file lives in, matching source("./Scripts/BROOD_Functions.R")
 # run from the repo root.
-current_script_path <- tryCatch(
-  normalizePath(sys.frame(1)$ofile),
-  error = function(e) stop("Cannot find script path. Please source this file rather than running line-by-line.")
-)
+current_script_path <- tryCatch({
+  ofiles <- Filter(Negate(is.null), lapply(sys.frames(), function(f) f$ofile))
+  if(length(ofiles) == 0) stop("no ofile found in any frame")
+  normalizePath(ofiles[[length(ofiles)]])
+}, error = function(e) stop("Cannot find script path. Please source this file rather than running line-by-line."))
+
 script_dir <- dirname(current_script_path)
 
 Rcpp::sourceCpp(file.path(script_dir, "score_table.cpp"))
@@ -53,12 +55,16 @@ Rcpp::sourceCpp(file.path(script_dir, "score_table.cpp"))
 #' @param save_all_weights If TRUE, saves all birth-death weights, or just the subset for the thinned samples
 #' @param sparse If TRUE, uses the Matrix::Matrix(sparse=TRUE) type matrices, or standard R matrices in saved output
 #' @param verbose Outputs progress as the Markov Chain progresses
+#' @param mem_budget_gb Maximum memory budget to use in a graph_mcmc call. If NULL, the package will 
+#'                      use a heuristic to approximate it
+#' @param check_memory If TRUE, checks whether the max_sparsity specification is compatible with the RAM of the machine
 graph_mcmc <- function(H_0, param, c_star=1, space_move_prob=0.1, temper=1,
                        momentum=FALSE, q_scheme="rate_based",iter=25000, 
                        warm_up=NULL, max_sparsity=18, blacklist=NULL, thinning=250, 
                        move_type="relocate", sample_parameters=FALSE, plus1=FALSE, 
                        score_type="bge", rounded=FALSE, max_change=1, update_order_with_space=FALSE, 
-                       save_all_weights=TRUE, sparse=TRUE, verbose=TRUE) {
+                       save_all_weights=TRUE, sparse=TRUE, verbose=TRUE,
+                       mem_budget_gb=NULL, check_memory=TRUE) {
   
   if(!(score_type %in% c("bge", "dag_wishart"))) stop("Please use a valid score function: 'bge' or 'dag_wishart' ")
   
@@ -69,6 +75,23 @@ graph_mcmc <- function(H_0, param, c_star=1, space_move_prob=0.1, temper=1,
   if(max_sparsity > N-1){
     warning(paste("max_sparsity set to be more than number of nodes minus 1. Switching to be ", N-1))
     max_sparsity <- N-1
+  }
+  
+  if(check_memory){
+    mem_check <- recommend_max_sparsity(N, mem_budget_gb=mem_budget_gb, verbose=FALSE)
+    if(max_sparsity > mem_check$recommended_max_sparsity){
+      warning(sprintf(
+        paste("max_sparsity=%d risks exceeding available memory if the search space",
+              "grows dense (worst case: every node simultaneously at this sparsity).",
+              "Based on ~%.1f GB available, max_sparsity<=%d keeps the worst case under",
+              "control (~%.2f GB). This is a conservative, worst-case bound -- many runs",
+              "will be fine well above this if the search space stays sparse in practice,",
+              "but long runs under schemes/temperatures that push toward denser graphs",
+              "(e.g. q_scheme='symmetric' at high temper) are the ones actually at risk.",
+              "Pass check_memory=FALSE to silence this, or mem_budget_gb to set the budget explicitly."),
+        max_sparsity, mem_check$mem_budget_gb, mem_check$recommended_max_sparsity,
+        mem_check$worst_case_gb_at_recommendation), call.=FALSE)
+    }
   }
   
   warm_up <- if(is.null(warm_up)) 10 * N else warm_up
@@ -144,6 +167,7 @@ graph_mcmc <- function(H_0, param, c_star=1, space_move_prob=0.1, temper=1,
   # -- MCMC Loop --
   for(b in 1:total_iter) {
     if(verbose && b %% 500 == 0) message(sprintf("Iteration: %d", b))
+    if(b %% 5000 == 0) invisible(gc(verbose=FALSE))
     
     save_curr_weight <- save_all_weights || (b %in% thinned_samples)
     
@@ -901,15 +925,20 @@ score_plus_space <- function(H, map_pars, plus_pars, param,
         else{
           newly_added <- if(has_plus_orig && !is.null(map_pars_orig)) setdiff(map_pars$par_names[[i]], map_pars_orig$par_names[[i]]) else integer(0)
           if(score_type == "bge" && length(newly_added) == 1){
-            # single-edge birth: reuse the old table instead of rebuilding
-            # from scratch -- see conversation notes for the derivation.
-            score_matr <- extend_plus_score_table_cpp(i, map_pars_orig$par_names[[i]],
-                                                      plus_pars_orig$par_pset[[i]][-1,1],
-                                                      as.integer(newly_added), H_plus_scores[[i]],
-                                                      map_pars_orig$maps[[i]]$backwards,
-                                                      map_pars$par_names[[i]],
-                                                      map_pars$maps[[i]]$backwards, param$TN,
-                                                      param$awpN, param$scoreconstvec)
+            score_matr <- tryCatch({
+              extend_plus_score_table_cpp(i, map_pars_orig$par_names[[i]],
+                                          plus_pars_orig$par_pset[[i]][-1,1],
+                                          as.integer(newly_added), H_plus_scores[[i]],
+                                          map_pars_orig$maps[[i]]$backwards,
+                                          map_pars$par_names[[i]],
+                                          map_pars$maps[[i]]$backwards, param$TN,
+                                          param$awpN, param$scoreconstvec)
+            }, error=function(e){
+              stop(sprintf(
+                "extend_plus_score_table_cpp failed for node %d (K_old=%d, K_new=%d, lpp=%d): %s",
+                i, length(map_pars_orig$par_names[[i]]), length(map_pars$par_names[[i]]),
+                nrow(plus_pars_orig$par_pset[[i]])-1, conditionMessage(e)), call.=FALSE)
+            })
           }
           else if(score_type == "bge"){
             score_matr <- build_plus_score_table_cpp(i, map_pars$par_names[[i]], plus_combos[-1,1],
@@ -917,14 +946,21 @@ score_plus_space <- function(H, map_pars, plus_pars, param,
                                                      param$awpN, param$scoreconstvec)
           }
           else if(score_type == "dag_wishart" && length(newly_added) == 1){
-            score_matr <- extend_plus_score_table_dagwishart_cpp(i, map_pars_orig$par_names[[i]],
-                                                                 plus_pars_orig$par_pset[[i]][-1,1],
-                                                                 as.integer(newly_added), H_plus_scores[[i]],
-                                                                 map_pars_orig$maps[[i]]$backwards,
-                                                                 map_pars$par_names[[i]],
-                                                                 map_pars$maps[[i]]$backwards, param$UN, param$U0,
-                                                                 param$alpha_post[i], param$scoreconstlist,
-                                                                 if(is.null(param$logedgepvec)) numeric(0) else param$logedgepvec)
+            score_matr <- tryCatch({
+              extend_plus_score_table_dagwishart_cpp(i, map_pars_orig$par_names[[i]],
+                                                     plus_pars_orig$par_pset[[i]][-1,1],
+                                                     as.integer(newly_added), H_plus_scores[[i]],
+                                                     map_pars_orig$maps[[i]]$backwards,
+                                                     map_pars$par_names[[i]],
+                                                     map_pars$maps[[i]]$backwards, param$UN, param$U0,
+                                                     param$alpha_post[i], param$scoreconstlist,
+                                                     if(is.null(param$logedgepvec)) numeric(0) else param$logedgepvec)
+            }, error=function(e){
+              stop(sprintf(
+                "extend_plus_score_table_dagwishart_cpp failed for node %d (K_old=%d, K_new=%d, lpp=%d): %s",
+                i, length(map_pars_orig$par_names[[i]]), length(map_pars$par_names[[i]]),
+                nrow(plus_pars_orig$par_pset[[i]])-1, conditionMessage(e)), call.=FALSE)
+            })
           }
           else if(score_type == "dag_wishart"){
             score_matr <- build_plus_score_table_dagwishart_cpp(i, map_pars$par_names[[i]], plus_combos[-1,1],
@@ -983,9 +1019,11 @@ create_banned_plus_parent_table <- function(H, map_pars, plus_pars,
           new_cols <- which(plus_pars$par_pset[[i]][,1] %in% removed_pars)
           keep_idx <- integer(0)
           if(N_pars_orig > 0){
+            match_mask <- logical(nrow(combos_orig))
             for(colsy in 1:N_pars_orig){
-              keep_idx <- c(keep_idx, which(combos_orig[,colsy] %in% removed_pars))
+              match_mask[combos_orig[,colsy] %in% removed_pars] <- TRUE
             }
+            keep_idx <- which(match_mask)
             if(length(keep_idx)>0){
               plus_scores <- orig_scores_plus[[i]]
               curr_scores <- orig_scores[[i]]
@@ -1013,11 +1051,13 @@ create_banned_plus_parent_table <- function(H, map_pars, plus_pars,
           keep_idx_list <- vector(mode="list", length=N_removed)
           keep_idx_all <- integer(0)
           if(N_pars_orig > 0){
+            match_mask <- logical(nrow(combos_orig))
             for(k in 1:N_removed){
-              keep_idx <- integer(0)
+              match_mask[] <- FALSE
               for(colsy in 1:N_pars_orig){
-                keep_idx <- c(keep_idx, which(combos_orig[,colsy]==removed_pars[[k]]))
+                match_mask[combos_orig[,colsy] %in% removed_pars[[k]]] <- TRUE
               }
+              keep_idx <- which(match_mask)
               keep_idx_list[[k]] <- keep_idx
               keep_idx_all <- c(keep_idx_all, keep_idx)
             }
@@ -1752,6 +1792,9 @@ sample_from_node_relocation <- function(prec_orig, location,
   # relocated_node and new_node simply swap positions relative to the previous.
   pos_new <- pos_orig
   
+  allparents_reloc <- map_pars$par_names[[relocated_node]]
+  nonparents_reloc <- if(plus_1) which(!(1:N %in% c(allparents_reloc, relocated_node))) else NULL
+  
   if(location > 1){
     for(i in (location-1):1){
       new_node <- prec_orig[i]
@@ -1769,10 +1812,10 @@ sample_from_node_relocation <- function(prec_orig, location,
       if(i < location-1){
         score_mat[i, (i+2):(location)] <- score_mat[i+1, (i+2):(location)]
       }
-      allparents_i <- map_pars$par_names[[relocated_node]]
+      allparents_i <- allparents_reloc
       allparents_iplus1 <- map_pars$par_names[[new_node]]
-      nonparents_i <- which(!(1:N %in% c(allparents_i, relocated_node)))
-      nonparents_iplus1 <- which(!(1:N %in% c(allparents_iplus1, new_node)))
+      nonparents_i <- nonparents_reloc
+      nonparents_iplus1 <- if(plus_1) which(!(1:N %in% c(allparents_iplus1, new_node))) else NULL
       bannedrow_i <- 1
       bannedrow_iplus1 <- 1
       
@@ -1824,10 +1867,10 @@ sample_from_node_relocation <- function(prec_orig, location,
       if(i > location+1){
         score_mat[i, location:(i-2)] <- score_mat[i-1, location:(i-2)]
       }
-      allparents_i <- map_pars$par_names[[relocated_node]]
+      allparents_i <- allparents_reloc
       allparents_iminus1 <- map_pars$par_names[[new_node]]
-      nonparents_i <- which(!(1:N %in% c(allparents_i, relocated_node)))
-      nonparents_iminus1 <- which(!(1:N %in% c(allparents_iminus1, new_node)))
+      nonparents_i <- nonparents_reloc
+      nonparents_iminus1 <- if(plus_1) which(!(1:N %in% c(allparents_iminus1, new_node))) else NULL
       bannedrow_i <- 1
       bannedrow_iminus1 <- 1
       bannedvalues_i <- which(pos_new[allparents_i] < i)
@@ -1955,13 +1998,18 @@ banned_parents_mapping <- function(map_pars, prec, create_plus_sets=FALSE,
     if(create_plus_sets)  valid_parset_maps  <- vector(mode="list", length=N)
   }
   
+  non_parent_mask <- rep(TRUE, N)
+  
   for(i in updatenodes){
     # find where the current node is in the order
     index_i <- pos[i]
     # find the banned parent sets 
     # (a.k.a, nodes listed after the current node for each order)
     all_parents <- map_pars$par_names[[i]]
-    non_parents <- which(!(1:N %in% c(all_parents, i)))
+    touched_idx <- c(all_parents, i)
+    non_parent_mask[touched_idx] <- FALSE
+    non_parents <- which(non_parent_mask)
+    non_parent_mask[touched_idx] <- TRUE # restore for the next node
     banned_par_idx <- integer(0)
     allowed_nonpar_idx <- integer(0)
     if(index_i != 1){
@@ -2391,4 +2439,65 @@ sample_DL_parameters <- function(G, prec, param){
     
   }
   return(list("D" = D_vec, "L" = L_matr))
+}
+
+#' Estimate the largest max_sparsity that keeps the worst-case aggregate
+#' score-table footprint within a memory budget.
+#'
+#' The four score-table lists (full_scores, full_plus_scores, banned_scores,
+#' banned_plus_scores) each hold one table per node, held simultaneously for
+#' all N nodes. Per node, worst case is 2*2^K + 2*2^K*(lpp+1) elements, where
+#' lpp = N-K-1 in the worst case (every other node still a "+1" candidate).
+#' This assumes the pessimistic case of every node simultaneously at K -- in
+#' practice this is a substantial overestimate unless the chain has drifted
+#' toward a very dense search space, which is exactly the failure mode this
+#' is meant to warn about.
+#'
+#' @param N number of nodes
+#' @param mem_budget_gb available memory in GB; if NULL, attempts to detect
+#'   automatically (Linux via /proc/meminfo, Windows via wmic), falling back
+#'   to a conservative 4 GB assumption if detection fails
+#' @param safety_fraction fraction of the budget to actually allow use of
+#'   (default 0.5, leaving headroom for R's own overhead, the OS, and other
+#'   processes)
+#' @param verbose print the detected/assumed budget
+recommend_max_sparsity <- function(N, mem_budget_gb=NULL, safety_fraction=0.5, verbose=TRUE){
+  if(is.null(mem_budget_gb)){
+    mem_budget_gb <- tryCatch({
+      if(.Platform$OS.type == "unix" && file.exists("/proc/meminfo")){
+        meminfo <- readLines("/proc/meminfo")
+        avail_line <- grep("^MemAvailable:", meminfo, value=TRUE)
+        if(length(avail_line) > 0) as.numeric(gsub("[^0-9]", "", avail_line)) / 1e6 else NA
+      }
+      else if(.Platform$OS.type == "windows"){
+        out <- system("wmic OS get FreePhysicalMemory", intern=TRUE)
+        val <- suppressWarnings(as.numeric(trimws(out[2])))
+        if(!is.na(val)) val / 1e6 else NA
+      }
+      else NA
+    }, error=function(e) NA)
+    
+    if(is.na(mem_budget_gb)){
+      mem_budget_gb <- 4
+      if(verbose) message("Could not auto-detect available memory; assuming a conservative 4 GB budget. Pass mem_budget_gb explicitly to override this.")
+    }
+    else if(verbose) message(sprintf("Detected ~%.1f GB available memory.", mem_budget_gb))
+  }
+  
+  usable_bytes <- mem_budget_gb * 1e9 * safety_fraction
+  
+  worst_case_bytes <- function(K){
+    lpp_worst <- max(N - K - 1, 0)
+    per_node <- 2*(2^K) + 2*(2^K)*(lpp_worst+1)
+    N * per_node * 8
+  }
+  
+  K_rec <- 1
+  for(K in (N-1):1){
+    if(worst_case_bytes(K) <= usable_bytes){ K_rec <- K; break }
+  }
+  
+  list(recommended_max_sparsity=K_rec, mem_budget_gb=mem_budget_gb,
+       safety_fraction=safety_fraction,
+       worst_case_gb_at_recommendation=worst_case_bytes(K_rec)/1e9)
 }
